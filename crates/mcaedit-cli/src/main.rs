@@ -239,6 +239,19 @@ enum HistoryCmd {
 }
 
 fn main() -> Result<()> {
+    // `mca` region encode/decode needs a large stack; Windows main-thread default (~1MiB)
+    // overflows on first set-block. Mirror the integration-test worker stack.
+    const STACK: usize = 16 * 1024 * 1024;
+    std::thread::Builder::new()
+        .name("mcaedit-main".into())
+        .stack_size(STACK)
+        .spawn(run)
+        .context("spawn mcaedit worker")?
+        .join()
+        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir()?;
     match cli.command {

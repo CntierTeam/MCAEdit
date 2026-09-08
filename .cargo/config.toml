@@ -1,2 +1,11 @@
+# Also used by `cargo test` threads. Main-thread stack on Windows is set via
+# link-arg below; CLI additionally spawns a 16MiB worker (see mcaedit-cli main).
 [env]
 RUST_MIN_STACK = "16777216"
+
+# PE default stack is ~1MiB; mca region write overflows it.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:16777216"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:16777216"]
