@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mcaedit-core",
+    "crates/mcaedit-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["CntierTeam"]
+repository = "https://github.com/CntierTeam/MCAEdit"
+
+[workspace.dependencies]
+mcaedit-core = { path = "crates/mcaedit-core" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+mca = "2.1"
+fastnbt = "2"
+flate2 = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+indexmap = { version = "2", features = ["serde"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
