@@ -1,6 +1,6 @@
 interface:
   display_name: "MCAEdit"
-  short_description: "代跑 mcaedit：session/edit/view/commit"
-  default_prompt: "按 $mcaedit 当操作员：用户要开 session、inspect、区域编辑、剪贴板/模板、view screenshot、地形 gen/fix-light/tick-participate、history、commit 时，用 shell 直接跑 mcaedit，不要只拼命令或 SAMPLE。缺世界路径/session/坐标先问一句再继续；编辑落工作副本，写回用 commit（可先 --dry-run）；截图用 view screenshot。"
+  short_description: "代跑 mcaedit：session/edit/brush/schem/view/commit"
+  default_prompt: "按 $mcaedit 当操作员：用户要开 session、inspect、区域编辑、brush/mask/%pattern/smooth/biome、剪贴板/模板/schem、view screenshot、地形 gen/fix-light/tick-participate、history、commit 时，用 shell 直接跑 mcaedit，不要只拼命令或 SAMPLE。缺世界路径/session/坐标先问一句再继续；编辑落工作副本，写回用 commit（可先 --dry-run）；截图用 view screenshot。"
 policy:
   allow_implicit_invocation: true

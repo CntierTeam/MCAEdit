@@ -13,6 +13,16 @@ pub struct BlockChange {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BiomeChange {
+    /// World coords of biome cell origin (aligned to 4).
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub before: String,
+    pub after: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpawnedEntity {
     pub chunk_x: i32,
     pub chunk_z: i32,
@@ -24,6 +34,9 @@ pub struct SpawnedEntity {
 pub enum ActionPayload {
     SetBlocks {
         changes: Vec<BlockChange>,
+    },
+    SetBiomes {
+        changes: Vec<BiomeChange>,
     },
     SetSection {
         cx: i32,
@@ -69,6 +82,7 @@ impl Action {
     pub fn changed_count(&self) -> usize {
         match &self.payload {
             ActionPayload::SetBlocks { changes } => changes.len(),
+            ActionPayload::SetBiomes { changes } => changes.len(),
             ActionPayload::SetSection { after, .. } => after
                 .cells
                 .values()

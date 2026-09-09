@@ -56,3 +56,13 @@ jobs:
           "${BIN}" --session ci edit gen --seed 1 --dim overworld --from 0,0 --to 0,0
           "${BIN}" --session ci edit fix-light --from 0,0 --to 0,0 --seed 1
           "${BIN}" --session ci edit tick-participate --from 0,0 --to 0,0 --rounds 1
+          # brush / pattern / mask / smooth / biome / schem
+          "${BIN}" --session ci edit fill --from 0,70,0 --to 7,70,7 --pattern '50%stone,50%dirt'
+          "${BIN}" --session ci edit brush sphere --at 16,72,16 --radius 3 --block minecraft:glass --mask air
+          "${BIN}" --session ci edit smooth --from 0,64,0 --to 7,80,7 --iterations 1
+          "${BIN}" --session ci edit biome --from 0,64,0 --to 7,67,7 --biome minecraft:plains
+          "${BIN}" --session ci schem export --from 0,70,0 --to 3,71,3 --out "${ROOT}/t.schem"
+          "${BIN}" --session ci schem info --file "${ROOT}/t.schem" | grep -q version=
+          "${BIN}" --session ci schem import --file "${ROOT}/t.schem" --at 64,70,64
+          "${BIN}" edit brush --help >/dev/null
+          "${BIN}" schem --help >/dev/null

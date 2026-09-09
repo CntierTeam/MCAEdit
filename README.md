@@ -32,7 +32,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Force
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/install.sh \
-  | bash -s -- --version v0.3.1 --force
+  | bash -s -- --version v0.4.0 --force
 ./scripts/install.sh --from-source --symlink-skill --force
 ./scripts/install.sh --uninstall
 ```
@@ -76,18 +76,21 @@ mcaedit --session demo edit tick-participate --from 0,0 --to 3,3 --rounds 20 --s
 产物：`mcaedit-<target>.tar.gz`、`mcaedit-skill.tar.gz`、`install.sh` / `install.ps1`。
 
 ```bash
-git tag v0.3.1
-git push origin v0.3.1
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 ## Region edits
 
-选区一律 `--from x,y,z --to x,y,z`（无 pos1/pos2）。
+选区一律 `--from x,y,z --to x,y,z`（无 pos1/pos2）。`--block` / `--pattern` 支持 `%` 权重（如 `50%stone,50%dirt`）；`--mask` / `--mask-exclude` 可组合过滤。
 
 ```bash
 mcaedit --session demo edit fill --from 0,64,0 --to 7,66,7 --block minecraft:stone
+mcaedit --session demo edit fill --from 0,64,0 --to 15,64,15 --pattern '50%stone,50%dirt'
 mcaedit --session demo edit replace --from 0,64,0 --to 7,66,7 \
   --match air --with minecraft:glass
+mcaedit --session demo edit replace --from 0,64,0 --to 15,70,15 \
+  --mask 'stone,dirt' --with '70%cobblestone,30%gravel'
 mcaedit --session demo edit walls --from 0,64,0 --to 7,66,7 --block minecraft:oak_planks
 mcaedit --session demo edit outline --from 0,64,0 --to 7,66,7 --block minecraft:stone
 mcaedit --session demo edit hollow --from 0,64,0 --to 7,66,7
@@ -98,6 +101,33 @@ mcaedit --session demo edit cyl --at 0,0 --y 64 --radius 4 --height 8 --block mi
 mcaedit --session demo edit stack --from 0,64,0 --to 2,64,2 --n 3 --dx 4 --dy 0 --dz 0
 mcaedit --session demo edit move --from 0,64,0 --to 2,64,2 --dx 8 --dy 0 --dz 0
 ```
+
+## Brush / smooth / biome
+
+```bash
+mcaedit --session demo edit brush sphere --at 0,70,0 --radius 5 \
+  --pattern '50%stone,50%dirt' --mask air
+mcaedit --session demo edit brush cyl --at 0,0 --y 64 --radius 4 --height 8 \
+  --block minecraft:sand --mask '#solid'
+mcaedit --session demo edit copy --from 0,64,0 --to 2,65,2
+mcaedit --session demo edit brush clipboard --at 32,64,32 --radius 6 --mask air
+mcaedit --session demo edit smooth --from 0,60,0 --to 31,80,31 --iterations 2 --kernel 1
+mcaedit --session demo edit biome --from 0,64,0 --to 31,80,31 --biome minecraft:desert
+```
+
+Biome 按 MCA section 的 4×4×4 分辨率写入，可 undo。
+
+## Sponge `.schem`
+
+```bash
+mcaedit --session demo schem export --from 0,64,0 --to 15,80,15 --out /tmp/box.schem
+mcaedit schem info --file /tmp/box.schem
+mcaedit --session demo schem import --file /tmp/box.schem --at 64,64,64
+mcaedit template export-schem --name hut --out /tmp/hut.schem
+mcaedit template import-schem --file /tmp/hut.schem --name hut
+```
+
+写出 Sponge Schematic **v2**；读取支持 v2/v3。
 
 ## Offline view screenshot
 
@@ -124,8 +154,7 @@ mcaedit --session demo edit cut --from 0,64,0 --to 3,65,2
 
 对照表见 skill：`.codex/skills/mcaedit/references/region-ops.md`。本功能的离线取景/渲染思路参考 [Arcus92/minecraft-web-viewer](https://github.com/Arcus92/minecraft-web-viewer) 与 [Arcus92/minecraft-web-exporter](https://github.com/Arcus92/minecraft-web-exporter)（MIT）。
 
-**未实现：** brush、复杂 mask、百分比 pattern、smooth、生物群系、`.schem` 互通。
-
+已知限制：biome 为 section 内 4×4×4；离线 tick 非完整服务端行为；无 Linear region。
 ## Multi-session collaboration
 
 ```bash

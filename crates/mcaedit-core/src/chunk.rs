@@ -1,10 +1,14 @@
+use crate::bitstorage::BitStorage;
 use crate::blockstate::BlockState;
 use crate::chunk_nbt::{json_to_nbt, nbt_to_json};
 use crate::error::{Error, Result};
 use crate::palette::{SectionBlocks, SectionDiff};
 use fastnbt::Value;
+use indexmap::IndexSet;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
+
+pub const BIOME_SECTION_SIZE: usize = 64; // 4×4×4
 
 #[derive(Clone, Debug)]
 pub struct ChunkData {
@@ -126,6 +130,68 @@ impl ChunkData {
         Ok(before)
     }
 
+    /// Biome id at block coords (4×4×4 resolution inside the section).
+    pub fn get_biome(&self, x: i32, y: i32, z: i32) -> Result<String> {
+        let (_, _, _, sy) = local_in_chunk(x, y, z);
+        let biomes = self.read_section_biomes(sy)?;
+        let (bx, by, bz) = biome_local(x, y, z);
+        Ok(biomes.get(bx, by, bz).to_string())
+    }
+
+    pub fn set_biome(&mut self, x: i32, y: i32, z: i32, biome: &str) -> Result<String> {
+        let (_, _, _, sy) = local_in_chunk(x, y, z);
+        let mut biomes = self.read_section_biomes(sy)?;
+        let (bx, by, bz) = biome_local(x, y, z);
+        let before = biomes.get(bx, by, bz).to_string();
+        if before == biome {
+            return Ok(before);
+        }
+        biomes.set(bx, by, bz, biome);
+        self.write_section_biomes(sy, &biomes)?;
+        Ok(before)
+    }
+
+    pub fn read_section_biomes(&self, section_y: i8) -> Result<SectionBiomes> {
+        if let Some(idx) = self.find_section_index(section_y)? {
+            section_biomes_from_json(&self.sections()?[idx])
+        } else {
+            Ok(SectionBiomes::filled("minecraft:plains"))
+        }
+    }
+
+    pub fn write_section_biomes(&mut self, section_y: i8, biomes: &SectionBiomes) -> Result<()> {
+        let (palette, data) = biomes.to_palette_nbt()?;
+        let mut bio = serde_json::Map::new();
+        bio.insert(
+            "palette".into(),
+            JsonValue::Array(palette.into_iter().map(JsonValue::String).collect()),
+        );
+        if let Some(data) = data {
+            let arr: Vec<JsonValue> = data.into_iter().map(JsonValue::from).collect();
+            bio.insert("data".into(), JsonValue::Array(arr));
+        }
+        let biomes_json = JsonValue::Object(bio);
+
+        if let Some(idx) = self.find_section_index(section_y)? {
+            let sec = &mut self.sections_mut()?[idx];
+            let obj = sec
+                .as_object_mut()
+                .ok_or_else(|| Error::msg("section not object"))?;
+            obj.insert("biomes".into(), biomes_json);
+        } else {
+            // Ensure section exists with air blocks + biomes.
+            self.write_section_blocks(section_y, &SectionBlocks::air())?;
+            let idx = self
+                .find_section_index(section_y)?
+                .ok_or_else(|| Error::msg("section missing after create"))?;
+            let sec = &mut self.sections_mut()?[idx];
+            sec.as_object_mut()
+                .ok_or_else(|| Error::msg("section not object"))?
+                .insert("biomes".into(), biomes_json);
+        }
+        Ok(())
+    }
+
     pub fn apply_section_diff(&mut self, section_y: i8, diff: &SectionDiff) -> Result<usize> {
         let mut section = self.read_section_blocks(section_y)?;
         let changed = diff.apply_to(&mut section);
@@ -205,4 +271,141 @@ fn section_blocks_from_json(sec: &JsonValue) -> Result<SectionBlocks> {
         })
     });
     SectionBlocks::from_palette_nbt(palette, data.as_deref())
+}
+
+/// Local biome cell (0..3) inside a section for block world coords.
+pub fn biome_local(x: i32, y: i32, z: i32) -> (u8, u8, u8) {
+    let bx = ((x & 15) >> 2) as u8;
+    let by = ((y & 15) >> 2) as u8;
+    let bz = ((z & 15) >> 2) as u8;
+    (bx, by, bz)
+}
+
+/// Min block corner of the 4×4×4 biome cell containing (x,y,z).
+pub fn biome_cell_origin(x: i32, y: i32, z: i32) -> (i32, i32, i32) {
+    (x & !3, y & !3, z & !3)
+}
+
+fn biome_bits_for_palette_size(size: usize) -> u8 {
+    if size <= 1 {
+        return 0;
+    }
+    let b = (usize::BITS - (size - 1).leading_zeros()) as u8;
+    b.max(1)
+}
+
+/// Section biomes: palette of biome ids + 64 indices.
+#[derive(Clone, Debug)]
+pub struct SectionBiomes {
+    pub palette: Vec<String>,
+    pub indices: Vec<u16>,
+}
+
+impl SectionBiomes {
+    pub fn filled(biome: impl Into<String>) -> Self {
+        Self {
+            palette: vec![normalize_biome(biome.into())],
+            indices: vec![0; BIOME_SECTION_SIZE],
+        }
+    }
+
+    pub fn index(x: u8, y: u8, z: u8) -> usize {
+        ((y as usize) << 4) | ((z as usize) << 2) | (x as usize)
+    }
+
+    pub fn get(&self, x: u8, y: u8, z: u8) -> &str {
+        let id = self.indices[Self::index(x, y, z)] as usize;
+        &self.palette[id]
+    }
+
+    pub fn set(&mut self, x: u8, y: u8, z: u8, biome: &str) {
+        let biome = normalize_biome(biome.to_string());
+        let idx = Self::index(x, y, z);
+        if let Some(pos) = self.palette.iter().position(|s| s == &biome) {
+            self.indices[idx] = pos as u16;
+            return;
+        }
+        let pos = self.palette.len();
+        self.palette.push(biome);
+        self.indices[idx] = pos as u16;
+    }
+
+    pub fn to_palette_nbt(&self) -> Result<(Vec<String>, Option<Vec<i64>>)> {
+        let mut used: IndexSet<String> = IndexSet::new();
+        let mut ids = Vec::with_capacity(BIOME_SECTION_SIZE);
+        for &id in &self.indices {
+            let key = self.palette[id as usize].clone();
+            let (idx, _) = used.insert_full(key);
+            ids.push(idx as u32);
+        }
+        let palette: Vec<String> = used.into_iter().collect();
+        let bits = biome_bits_for_palette_size(palette.len());
+        if bits == 0 {
+            return Ok((palette, None));
+        }
+        let storage = BitStorage::pack_values(bits, &ids);
+        Ok((palette, Some(storage.into_raw())))
+    }
+
+    pub fn from_palette_nbt(palette: &[String], data: Option<&[i64]>) -> Result<Self> {
+        if palette.is_empty() {
+            return Ok(Self::filled("minecraft:plains"));
+        }
+        if palette.len() == 1 || data.map(|d| d.is_empty()).unwrap_or(true) {
+            return Ok(Self::filled(palette[0].clone()));
+        }
+        let bits = biome_bits_for_palette_size(palette.len());
+        if bits == 0 {
+            return Ok(Self::filled(palette[0].clone()));
+        }
+        let raw = data.unwrap_or(&[]);
+        let storage =
+            BitStorage::from_raw(bits, BIOME_SECTION_SIZE, raw.to_vec()).map_err(Error::msg)?;
+        let mut indices = Vec::with_capacity(BIOME_SECTION_SIZE);
+        for i in 0..BIOME_SECTION_SIZE {
+            let id = storage.get(i) as usize;
+            if id >= palette.len() {
+                return Err(Error::msg(format!("biome palette index {id} out of range")));
+            }
+            indices.push(id as u16);
+        }
+        Ok(Self {
+            palette: palette.to_vec(),
+            indices,
+        })
+    }
+}
+
+fn normalize_biome(s: String) -> String {
+    let t = s.trim();
+    if t.contains(':') {
+        t.to_string()
+    } else {
+        format!("minecraft:{t}")
+    }
+}
+
+fn section_biomes_from_json(sec: &JsonValue) -> Result<SectionBiomes> {
+    let Some(bio) = sec.get("biomes") else {
+        return Ok(SectionBiomes::filled("minecraft:plains"));
+    };
+    let palette: Vec<String> = bio
+        .get("palette")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| Error::msg("biomes missing palette"))?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(|s| normalize_biome(s.to_string()))
+                .ok_or_else(|| Error::msg("biome palette entry not string"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let data: Option<Vec<i64>> = bio.get("data").and_then(|d| {
+        d.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
+                .collect()
+        })
+    });
+    SectionBiomes::from_palette_nbt(&palette, data.as_deref())
 }

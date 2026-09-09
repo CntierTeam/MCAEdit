@@ -51,6 +51,11 @@ enum Commands {
         #[command(subcommand)]
         cmd: TemplateCmd,
     },
+    /// Sponge schematic (.schem) import / export
+    Schem {
+        #[command(subcommand)]
+        cmd: SchemCmd,
+    },
     View {
         #[command(subcommand)]
         cmd: ViewCmd,
@@ -88,6 +93,45 @@ enum TemplateCmd {
     Rm {
         #[arg(long)]
         name: String,
+    },
+    /// Export template to Sponge .schem
+    ExportSchem {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Import .schem as a named template
+    ImportSchem {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SchemCmd {
+    /// Export AABB to .schem (Sponge v2)
+    Export {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Import/paste .schem at origin
+    Import {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long, help = "x,y,z")]
+        at: String,
+    },
+    /// Show .schem metadata
+    Info {
+        #[arg(long)]
+        file: PathBuf,
     },
 }
 
@@ -179,19 +223,33 @@ enum EditCmd {
         from: String,
         #[arg(long, help = "x,y,z")]
         to: String,
+        /// Block or % pattern (e.g. minecraft:stone or 50%stone,50%dirt)
         #[arg(long)]
-        block: String,
+        block: Option<String>,
+        #[arg(long, help = "alias of --block; supports % pattern")]
+        pattern: Option<String>,
+        /// Only touch matching blocks (air|stone|#solid|a&b|!air)
+        #[arg(long)]
+        mask: Option<String>,
+        #[arg(long = "mask-exclude", help = "exclude mask (OR list)")]
+        mask_exclude: Option<String>,
     },
-    /// Replace matching blocks in AABB (`--match air` = air-like)
+    /// Replace matching blocks in AABB (`--match air` = air-like; `--with` may be % pattern)
     Replace {
         #[arg(long, help = "x,y,z")]
         from: String,
         #[arg(long, help = "x,y,z")]
         to: String,
-        #[arg(long = "match")]
-        match_block: String,
-        #[arg(long = "with")]
-        with_block: String,
+        #[arg(long = "match", help = "mask / block filter")]
+        match_block: Option<String>,
+        #[arg(long, help = "alias of --match (compose mask)")]
+        mask: Option<String>,
+        #[arg(long = "mask-exclude")]
+        mask_exclude: Option<String>,
+        #[arg(long = "with", help = "block or % pattern")]
+        with_block: Option<String>,
+        #[arg(long, help = "alias of --with")]
+        pattern: Option<String>,
     },
     Walls {
         #[arg(long, help = "x,y,z")]
@@ -299,6 +357,32 @@ enum EditCmd {
         #[arg(long)]
         axis: String,
     },
+    /// Brush apply at a point (sphere / cyl / clipboard)
+    Brush {
+        #[command(subcommand)]
+        cmd: BrushCmd,
+    },
+    /// Heightmap / surface smooth over AABB
+    Smooth {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long, default_value_t = 1)]
+        iterations: u32,
+        /// Neighbor kernel radius (Chebyshev), default 1
+        #[arg(long, default_value_t = 1)]
+        kernel: i32,
+    },
+    /// Paint biomes in AABB (4×4×4 resolution per section)
+    Biome {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long, help = "minecraft:plains or plains")]
+        biome: String,
+    },
     /// Generate terrain into session work region/
     Gen {
         #[arg(long, default_value_t = 0)]
@@ -346,6 +430,59 @@ enum EditCmd {
     Entity {
         #[command(subcommand)]
         cmd: EntityCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum BrushCmd {
+    /// Sphere brush at center
+    Sphere {
+        #[arg(long, help = "x,y,z center")]
+        at: String,
+        #[arg(long)]
+        radius: f64,
+        #[arg(long)]
+        block: Option<String>,
+        #[arg(long)]
+        pattern: Option<String>,
+        #[arg(long)]
+        mask: Option<String>,
+        #[arg(long = "mask-exclude")]
+        mask_exclude: Option<String>,
+        #[arg(long, default_value_t = false)]
+        hollow: bool,
+    },
+    /// Vertical cylinder brush
+    Cyl {
+        #[arg(long, help = "x,z center")]
+        at: String,
+        #[arg(long)]
+        y: i32,
+        #[arg(long)]
+        radius: f64,
+        #[arg(long)]
+        height: i32,
+        #[arg(long)]
+        block: Option<String>,
+        #[arg(long)]
+        pattern: Option<String>,
+        #[arg(long)]
+        mask: Option<String>,
+        #[arg(long = "mask-exclude")]
+        mask_exclude: Option<String>,
+        #[arg(long, default_value_t = false)]
+        hollow: bool,
+    },
+    /// Paste clipboard at point; optional sphere clip + mask
+    Clipboard {
+        #[arg(long, help = "x,y,z origin")]
+        at: String,
+        #[arg(long)]
+        radius: Option<f64>,
+        #[arg(long)]
+        mask: Option<String>,
+        #[arg(long = "mask-exclude")]
+        mask_exclude: Option<String>,
     },
 }
 
@@ -645,26 +782,42 @@ fn run() -> Result<()> {
                                 BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
                             world.set_block(x, y, z, block)?
                         }
-                        EditCmd::Fill { from, to, block } => {
+                        EditCmd::Fill {
+                            from,
+                            to,
+                            block,
+                            pattern,
+                            mask,
+                            mask_exclude,
+                        } => {
                             let (x1, y1, z1) = parse_xyz_i(&from)?;
                             let (x2, y2, z2) = parse_xyz_i(&to)?;
-                            let block =
-                                BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
-                            world.fill(x1, y1, z1, x2, y2, z2, block)?
+                            let pattern = parse_pattern_arg(pattern.as_deref(), block.as_deref())?;
+                            let mask = parse_mask_opt(mask.as_deref(), mask_exclude.as_deref())?;
+                            world.fill_pattern(x1, y1, z1, x2, y2, z2, pattern, mask)?
                         }
                         EditCmd::Replace {
                             from,
                             to,
                             match_block,
+                            mask,
+                            mask_exclude,
                             with_block,
+                            pattern,
                         } => {
                             let (x1, y1, z1) = parse_xyz_i(&from)?;
                             let (x2, y2, z2) = parse_xyz_i(&to)?;
-                            let match_block = mcaedit_core::ops::parse_match_filter(&match_block)
-                                .map_err(|e| anyhow::anyhow!(e))?;
-                            let with_block = BlockState::parse(&with_block)
-                                .map_err(|e| anyhow::anyhow!(e))?;
-                            world.replace(x1, y1, z1, x2, y2, z2, match_block, with_block)?
+                            let mask_src = mask
+                                .as_deref()
+                                .or(match_block.as_deref())
+                                .ok_or_else(|| anyhow::anyhow!("need --match or --mask"))?;
+                            let mask = parse_mask_opt(Some(mask_src), mask_exclude.as_deref())?
+                                .unwrap_or_else(mcaedit_core::Mask::any);
+                            let pattern =
+                                parse_pattern_arg(pattern.as_deref(), with_block.as_deref())?;
+                            world.replace_mask_pattern(
+                                x1, y1, z1, x2, y2, z2, mask, pattern,
+                            )?
                         }
                         EditCmd::Walls { from, to, block } => {
                             let (x1, y1, z1) = parse_xyz_i(&from)?;
@@ -747,6 +900,72 @@ fn run() -> Result<()> {
                         EditCmd::Paste { at } => {
                             let (x, y, z) = parse_xyz_i(&at)?;
                             world.clipboard_paste(x, y, z)?
+                        }
+                        EditCmd::Brush { cmd } => match cmd {
+                            BrushCmd::Sphere {
+                                at,
+                                radius,
+                                block,
+                                pattern,
+                                mask,
+                                mask_exclude,
+                                hollow,
+                            } => {
+                                let (cx, cy, cz) = parse_xyz_i(&at)?;
+                                let pattern =
+                                    parse_pattern_arg(pattern.as_deref(), block.as_deref())?;
+                                let mask =
+                                    parse_mask_opt(mask.as_deref(), mask_exclude.as_deref())?;
+                                world.brush_sphere(
+                                    cx, cy, cz, radius, pattern, mask, hollow,
+                                )?
+                            }
+                            BrushCmd::Cyl {
+                                at,
+                                y,
+                                radius,
+                                height,
+                                block,
+                                pattern,
+                                mask,
+                                mask_exclude,
+                                hollow,
+                            } => {
+                                let (cx, cz) = parse_xz(&at)?;
+                                let pattern =
+                                    parse_pattern_arg(pattern.as_deref(), block.as_deref())?;
+                                let mask =
+                                    parse_mask_opt(mask.as_deref(), mask_exclude.as_deref())?;
+                                world.brush_cyl(
+                                    cx, cz, y, radius, height, pattern, mask, hollow,
+                                )?
+                            }
+                            BrushCmd::Clipboard {
+                                at,
+                                radius,
+                                mask,
+                                mask_exclude,
+                            } => {
+                                let (x, y, z) = parse_xyz_i(&at)?;
+                                let mask =
+                                    parse_mask_opt(mask.as_deref(), mask_exclude.as_deref())?;
+                                world.brush_clipboard(x, y, z, radius, mask)?
+                            }
+                        },
+                        EditCmd::Smooth {
+                            from,
+                            to,
+                            iterations,
+                            kernel,
+                        } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            world.smooth(x1, y1, z1, x2, y2, z2, iterations, kernel)?
+                        }
+                        EditCmd::Biome { from, to, biome } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            world.biome_paint(x1, y1, z1, x2, y2, z2, &biome)?
                         }
                         EditCmd::SetSection {
                             cx,
@@ -890,6 +1109,67 @@ fn run() -> Result<()> {
             TemplateCmd::Rm { name } => {
                 Template::delete(&cwd, &name)?;
                 println!("deleted={name}");
+            }
+            TemplateCmd::ExportSchem { name, out } => {
+                let tpl = Template::load(&cwd, &name)?;
+                let info = mcaedit_core::schem::export_template(&tpl, &out)?;
+                for line in info.lines() {
+                    println!("{line}");
+                }
+            }
+            TemplateCmd::ImportSchem { file, name } => {
+                let tpl = mcaedit_core::schem::import_to_template(&file, &name)?;
+                let path = tpl.save_to_disk(&cwd)?;
+                for line in tpl.brief_lines() {
+                    println!("{line}");
+                }
+                println!("saved={}", path.display());
+            }
+        },
+        Commands::Schem { cmd } => match cmd {
+            SchemCmd::Export { from, to, out } => {
+                let mut s = open_session(&cwd, cli.session.as_deref())?;
+                let world = WorldView::new(&mut s);
+                let (x1, y1, z1) = parse_xyz_i(&from)?;
+                let (x2, y2, z2) = parse_xyz_i(&to)?;
+                let info = mcaedit_core::schem::export_aabb(
+                    &world, x1, y1, z1, x2, y2, z2, &out,
+                )?;
+                for line in info.lines() {
+                    println!("{line}");
+                }
+            }
+            SchemCmd::Import { file, at } => {
+                let mut s = open_session(&cwd, cli.session.as_deref())?;
+                let mut world = WorldView::new(&mut s);
+                let (x, y, z) = parse_xyz_i(&at)?;
+                let action = mcaedit_core::schem::import_paste(&mut world, &file, x, y, z)?;
+                println!(
+                    "action={} changed={} dirty=true desc={}",
+                    action.id,
+                    action.changed_count(),
+                    action.description
+                );
+            }
+            SchemCmd::Info { file } => {
+                let info = mcaedit_core::schem::info(&file)?;
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "path": info.path,
+                            "version": info.version,
+                            "width": info.width,
+                            "height": info.height,
+                            "length": info.length,
+                            "palette_n": info.palette_n,
+                        })
+                    );
+                } else {
+                    for line in info.lines() {
+                        println!("{line}");
+                    }
+                }
             }
         },
         Commands::View { cmd } => {
@@ -1036,4 +1316,28 @@ fn parse_section_diff_loose(v: &JsonValue) -> Result<SectionDiff> {
         diff.set(x, y, z, state);
     }
     Ok(diff)
+}
+
+fn parse_pattern_arg(pattern: Option<&str>, block: Option<&str>) -> Result<mcaedit_core::Pattern> {
+    let src = pattern
+        .or(block)
+        .ok_or_else(|| anyhow::anyhow!("need --block or --pattern"))?;
+    mcaedit_core::Pattern::parse(src).map_err(|e| anyhow::anyhow!(e))
+}
+
+fn parse_mask_opt(
+    mask: Option<&str>,
+    mask_exclude: Option<&str>,
+) -> Result<Option<mcaedit_core::Mask>> {
+    if mask.is_none() && mask_exclude.is_none() {
+        return Ok(None);
+    }
+    let base = match mask {
+        Some(s) => Some(mcaedit_core::Mask::parse(s).map_err(|e| anyhow::anyhow!(e))?),
+        None => None,
+    };
+    Ok(Some(
+        mcaedit_core::Mask::with_exclude(base, mask_exclude)
+            .map_err(|e| anyhow::anyhow!(e))?,
+    ))
 }
