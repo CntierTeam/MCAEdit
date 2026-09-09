@@ -1,6 +1,8 @@
 //! Live session preview window (eframe/egui + shared soft raster mesh).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
+#[cfg(all(unix, not(target_os = "macos")))]
+use anyhow::bail;
 use eframe::egui;
 use glam::Vec3;
 use mcaedit_core::session::Session;
