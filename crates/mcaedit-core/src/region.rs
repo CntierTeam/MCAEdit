@@ -95,6 +95,61 @@ impl RegionStore {
         Ok(())
     }
 
+    pub fn write_raw_chunk_nbt(
+        &mut self,
+        chunk_x: i32,
+        chunk_z: i32,
+        nbt: Vec<u8>,
+    ) -> Result<()> {
+        let (rx, rz) = region_coords(chunk_x, chunk_z);
+        let expected = region_file_name(rx, rz);
+        if self
+            .path
+            .file_name()
+            .and_then(|s| s.to_str())
+            != Some(expected.as_str())
+        {
+            return Err(Error::msg(format!(
+                "region path {} does not match chunk region {expected}",
+                self.path.display()
+            )));
+        }
+        let (lx, lz) = local_chunk(chunk_x, chunk_z);
+        if self.path.exists() {
+            let bytes = fs::read(&self.path)?;
+            let region = RegionReader::new(&bytes)?;
+            let mut writer = region.into_writer(())?;
+            writer.set_chunk(lx, lz, nbt, Compression::default())?;
+            let mut out = Vec::new();
+            writer.write(&mut out)?;
+            atomic_write(&self.path, &out)?;
+        } else {
+            if let Some(parent) = self.path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut writer = RegionWriter::new();
+            writer.set_chunk(lx, lz, nbt, Compression::default())?;
+            let mut out = Vec::new();
+            writer.write(&mut out)?;
+            atomic_write(&self.path, &out)?;
+        }
+        self.dirty.insert((chunk_x, chunk_z));
+        Ok(())
+    }
+
+    pub fn read_raw_chunk_nbt(&self, chunk_x: i32, chunk_z: i32) -> Result<Option<Vec<u8>>> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&self.path)?;
+        if bytes.len() < 8192 {
+            return Ok(None);
+        }
+        let mut region = RegionReader::new(&bytes)?;
+        let (lx, lz) = local_chunk(chunk_x, chunk_z);
+        Ok(region.chunk(lx, lz)?.map(|b| b.to_vec()))
+    }
+
     pub fn list_present_chunks(&self) -> Result<Vec<(i32, i32)>> {
         if !self.path.exists() {
             return Ok(Vec::new());

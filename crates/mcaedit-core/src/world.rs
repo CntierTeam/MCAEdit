@@ -91,61 +91,36 @@ impl<'a> WorldView<'a> {
         Ok(action)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn fill(
+    /// Apply planned block changes (section-batched) and push one history entry.
+    pub fn apply_changes(
         &mut self,
-        x1: i32,
-        y1: i32,
-        z1: i32,
-        x2: i32,
-        y2: i32,
-        z2: i32,
-        block: BlockState,
+        changes: Vec<BlockChange>,
+        description: impl Into<String>,
     ) -> Result<Action> {
-        let (min_x, max_x) = (x1.min(x2), x1.max(x2));
-        let (min_y, max_y) = (y1.min(y2), y1.max(y2));
-        let (min_z, max_z) = (z1.min(z2), z1.max(z2));
-        let mut changes = Vec::new();
-        let mut dirty_chunks: BTreeMap<(i32, i32), ChunkData> = BTreeMap::new();
-
-        for x in min_x..=max_x {
-            for y in min_y..=max_y {
-                for z in min_z..=max_z {
-                    let cx = x >> 4;
-                    let cz = z >> 4;
-                    if let std::collections::btree_map::Entry::Vacant(e) = dirty_chunks.entry((cx, cz)) {
-                        e.insert(self.load_chunk(cx, cz)?);
-                    }
-                    let chunk = dirty_chunks.get_mut(&(cx, cz)).unwrap();
-                    let (lx, ly, lz, sy) = crate::chunk::local_in_chunk(x, y, z);
-                    // mutate section once per unique section key via cache on chunk root later;
-                    // for MVP still per-cell but avoid full JSON pack each time by batching sections.
-                    let _ = (lx, ly, lz, sy);
-                    let before = chunk.get_block(x, y, z)?;
-                    if before != block {
-                        changes.push(BlockChange {
-                            x,
-                            y,
-                            z,
-                            before,
-                            after: block.clone(),
-                        });
-                    }
-                }
-            }
+        if changes.is_empty() {
+            let action = Action {
+                id: 0,
+                description: description.into(),
+                payload: ActionPayload::SetBlocks { changes },
+            };
+            let action = self.session.history.push(action)?;
+            self.session.mark_dirty()?;
+            return Ok(action);
         }
 
-        // apply changes grouped by section
+        let mut dirty_chunks: BTreeMap<(i32, i32), ChunkData> = BTreeMap::new();
         let mut section_map: BTreeMap<(i32, i32, i8), crate::palette::SectionBlocks> =
             BTreeMap::new();
         for c in &changes {
             let cx = c.x >> 4;
             let cz = c.z >> 4;
+            if let std::collections::btree_map::Entry::Vacant(e) = dirty_chunks.entry((cx, cz)) {
+                e.insert(self.load_chunk(cx, cz)?);
+            }
             let (_, _, _, sy) = crate::chunk::local_in_chunk(c.x, c.y, c.z);
             let key = (cx, cz, sy);
             if let std::collections::btree_map::Entry::Vacant(e) = section_map.entry(key) {
-                let chunk = dirty_chunks.get(&(cx, cz)).unwrap();
-                e.insert(chunk.read_section_blocks(sy)?);
+                e.insert(dirty_chunks.get(&(cx, cz)).unwrap().read_section_blocks(sy)?);
             }
         }
         for c in &changes {
@@ -158,22 +133,429 @@ impl<'a> WorldView<'a> {
                 .set(lx, ly, lz, c.after.clone());
         }
         for ((cx, cz, sy), section) in section_map {
-            let chunk = dirty_chunks.get_mut(&(cx, cz)).unwrap();
-            chunk.write_section_blocks(sy, &section)?;
+            dirty_chunks
+                .get_mut(&(cx, cz))
+                .unwrap()
+                .write_section_blocks(sy, &section)?;
         }
         for chunk in dirty_chunks.values() {
             self.save_chunk(chunk)?;
         }
         let action = Action {
             id: 0,
-            description: format!(
-                "fill ({min_x},{min_y},{min_z})..({max_x},{max_y},{max_z}) -> {block}"
-            ),
+            description: description.into(),
             payload: ActionPayload::SetBlocks { changes },
         };
         let action = self.session.history.push(action)?;
         self.session.mark_dirty()?;
         Ok(action)
+    }
+
+    fn plan_set_positions(
+        &mut self,
+        positions: &[(i32, i32, i32)],
+        block: &BlockState,
+    ) -> Result<Vec<BlockChange>> {
+        let mut dirty_chunks: BTreeMap<(i32, i32), ChunkData> = BTreeMap::new();
+        let mut changes = Vec::new();
+        for &(x, y, z) in positions {
+            let cx = x >> 4;
+            let cz = z >> 4;
+            if let std::collections::btree_map::Entry::Vacant(e) = dirty_chunks.entry((cx, cz)) {
+                e.insert(self.load_chunk(cx, cz)?);
+            }
+            let before = dirty_chunks.get(&(cx, cz)).unwrap().get_block(x, y, z)?;
+            if &before != block {
+                changes.push(BlockChange {
+                    x,
+                    y,
+                    z,
+                    before,
+                    after: block.clone(),
+                });
+            }
+        }
+        Ok(changes)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill(
+        &mut self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+        block: BlockState,
+    ) -> Result<Action> {
+        let box_ = crate::ops::Aabb::from_corners(x1, y1, z1, x2, y2, z2);
+        let positions = crate::ops::aabb_positions(box_, |_, _, _| true);
+        let changes = self.plan_set_positions(&positions, &block)?;
+        self.apply_changes(
+            changes,
+            format!(
+                "fill ({},{},{})..({},{},{}) -> {block}",
+                box_.min_x, box_.min_y, box_.min_z, box_.max_x, box_.max_y, box_.max_z
+            ),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace(
+        &mut self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+        match_block: BlockState,
+        with: BlockState,
+    ) -> Result<Action> {
+        let box_ = crate::ops::Aabb::from_corners(x1, y1, z1, x2, y2, z2);
+        let mut dirty_chunks: BTreeMap<(i32, i32), ChunkData> = BTreeMap::new();
+        let mut changes = Vec::new();
+        for y in box_.min_y..=box_.max_y {
+            for z in box_.min_z..=box_.max_z {
+                for x in box_.min_x..=box_.max_x {
+                    let cx = x >> 4;
+                    let cz = z >> 4;
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        dirty_chunks.entry((cx, cz))
+                    {
+                        e.insert(self.load_chunk(cx, cz)?);
+                    }
+                    let before = dirty_chunks.get(&(cx, cz)).unwrap().get_block(x, y, z)?;
+                    if crate::ops::matches_filter(&before, &match_block) && before != with {
+                        changes.push(BlockChange {
+                            x,
+                            y,
+                            z,
+                            before,
+                            after: with.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        self.apply_changes(
+            changes,
+            format!(
+                "replace {match_block} -> {with} in ({},{},{})..({},{},{})",
+                box_.min_x, box_.min_y, box_.min_z, box_.max_x, box_.max_y, box_.max_z
+            ),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn walls(
+        &mut self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+        block: BlockState,
+    ) -> Result<Action> {
+        let box_ = crate::ops::Aabb::from_corners(x1, y1, z1, x2, y2, z2);
+        let positions = crate::ops::aabb_positions(box_, |x, y, z| box_.on_wall(x, y, z));
+        let changes = self.plan_set_positions(&positions, &block)?;
+        self.apply_changes(changes, format!("walls -> {block}"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn outline(
+        &mut self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+        block: BlockState,
+    ) -> Result<Action> {
+        let box_ = crate::ops::Aabb::from_corners(x1, y1, z1, x2, y2, z2);
+        let positions = crate::ops::aabb_positions(box_, |x, y, z| box_.on_outline(x, y, z));
+        let changes = self.plan_set_positions(&positions, &block)?;
+        self.apply_changes(changes, format!("outline -> {block}"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn hollow(
+        &mut self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+    ) -> Result<Action> {
+        let box_ = crate::ops::Aabb::from_corners(x1, y1, z1, x2, y2, z2);
+        let air = BlockState::air();
+        let positions = crate::ops::aabb_positions(box_, |x, y, z| box_.interior(x, y, z));
+        let changes = self.plan_set_positions(&positions, &air)?;
+        self.apply_changes(changes, "hollow (interior -> air)")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn overlay(
+        &mut self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+        block: BlockState,
+    ) -> Result<Action> {
+        let box_ = crate::ops::Aabb::from_corners(x1, y1, z1, x2, y2, z2);
+        let mut dirty_chunks: BTreeMap<(i32, i32), ChunkData> = BTreeMap::new();
+        let mut positions = Vec::new();
+        for z in box_.min_z..=box_.max_z {
+            for x in box_.min_x..=box_.max_x {
+                let mut top: Option<i32> = None;
+                for y in box_.min_y..=box_.max_y {
+                    let cx = x >> 4;
+                    let cz = z >> 4;
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        dirty_chunks.entry((cx, cz))
+                    {
+                        e.insert(self.load_chunk(cx, cz)?);
+                    }
+                    let b = dirty_chunks.get(&(cx, cz)).unwrap().get_block(x, y, z)?;
+                    if !b.is_air_like() {
+                        top = Some(y);
+                    }
+                }
+                if let Some(y) = top {
+                    let ny = y + 1;
+                    if ny <= box_.max_y {
+                        positions.push((x, ny, z));
+                    } else {
+                        // place just above selection top if column peaked at max_y
+                        positions.push((x, ny, z));
+                    }
+                }
+            }
+        }
+        let changes = self.plan_set_positions(&positions, &block)?;
+        self.apply_changes(changes, format!("overlay -> {block}"))
+    }
+
+    pub fn sphere(
+        &mut self,
+        cx: i32,
+        cy: i32,
+        cz: i32,
+        radius: f64,
+        block: BlockState,
+        hollow: bool,
+    ) -> Result<Action> {
+        let positions = crate::ops::sphere_positions(cx, cy, cz, radius, hollow);
+        let changes = self.plan_set_positions(&positions, &block)?;
+        let kind = if hollow { "hsphere" } else { "sphere" };
+        self.apply_changes(
+            changes,
+            format!("{kind} @{cx},{cy},{cz} r={radius} -> {block}"),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn cyl(
+        &mut self,
+        cx: i32,
+        cz: i32,
+        y_base: i32,
+        radius: f64,
+        height: i32,
+        block: BlockState,
+        hollow: bool,
+    ) -> Result<Action> {
+        let positions = crate::ops::cyl_positions(cx, cz, y_base, radius, height, hollow);
+        let changes = self.plan_set_positions(&positions, &block)?;
+        let kind = if hollow { "hcyl" } else { "cyl" };
+        self.apply_changes(
+            changes,
+            format!("{kind} @{cx},{y_base},{cz} r={radius} h={height} -> {block}"),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn stack(
+        &mut self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+        count: i32,
+        dx: i32,
+        dy: i32,
+        dz: i32,
+    ) -> Result<Action> {
+        if count < 1 {
+            return Err(Error::msg("stack count must be >= 1"));
+        }
+        let box_ = crate::ops::Aabb::from_corners(x1, y1, z1, x2, y2, z2);
+        let tpl = crate::template::Template::capture(
+            self,
+            "stack-src",
+            box_.min_x,
+            box_.min_y,
+            box_.min_z,
+            box_.max_x,
+            box_.max_y,
+            box_.max_z,
+        )?;
+        let mut changes = Vec::new();
+        for i in 1..=count {
+            let ox = box_.min_x + dx * i;
+            let oy = box_.min_y + dy * i;
+            let oz = box_.min_z + dz * i;
+            changes.extend(tpl.plan_paste_changes(self, ox, oy, oz)?);
+        }
+        self.apply_changes(
+            changes,
+            format!("stack n={count} dir=({dx},{dy},{dz})"),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn move_region(
+        &mut self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+        dx: i32,
+        dy: i32,
+        dz: i32,
+    ) -> Result<Action> {
+        let box_ = crate::ops::Aabb::from_corners(x1, y1, z1, x2, y2, z2);
+        let tpl = crate::template::Template::capture(
+            self,
+            "move-src",
+            box_.min_x,
+            box_.min_y,
+            box_.min_z,
+            box_.max_x,
+            box_.max_y,
+            box_.max_z,
+        )?;
+        let air = BlockState::air();
+        let clear_pos = crate::ops::aabb_positions(box_, |_, _, _| true);
+        let mut changes = self.plan_set_positions(&clear_pos, &air)?;
+        let paste =
+            tpl.plan_paste_changes(self, box_.min_x + dx, box_.min_y + dy, box_.min_z + dz)?;
+        // Later writes win on overlapping cells: clear first then paste overrides.
+        let mut by_pos: BTreeMap<(i32, i32, i32), BlockChange> = BTreeMap::new();
+        for c in changes {
+            by_pos.insert((c.x, c.y, c.z), c);
+        }
+        for c in paste {
+            by_pos.insert((c.x, c.y, c.z), c);
+        }
+        changes = by_pos.into_values().collect();
+        self.apply_changes(changes, format!("move by ({dx},{dy},{dz})"))
+    }
+
+    pub fn clipboard_copy(
+        &mut self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+    ) -> Result<crate::template::Template> {
+        let tpl = crate::template::Template::capture(self, "clipboard", x1, y1, z1, x2, y2, z2)?;
+        tpl.save_clipboard(self.session)?;
+        Ok(tpl)
+    }
+
+    pub fn clipboard_cut(
+        &mut self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+    ) -> Result<Action> {
+        let _ = self.clipboard_copy(x1, y1, z1, x2, y2, z2)?;
+        let box_ = crate::ops::Aabb::from_corners(x1, y1, z1, x2, y2, z2);
+        let air = BlockState::air();
+        let positions = crate::ops::aabb_positions(box_, |_, _, _| true);
+        let changes = self.plan_set_positions(&positions, &air)?;
+        self.apply_changes(changes, "cut (clipboard + clear)")
+    }
+
+    pub fn clipboard_paste(&mut self, ox: i32, oy: i32, oz: i32) -> Result<Action> {
+        let tpl = crate::template::Template::load_clipboard(self.session)?;
+        tpl.paste_into(self, ox, oy, oz)
+    }
+
+    pub fn clipboard_rotate_yaw(&mut self, yaw: i32) -> Result<crate::template::Template> {
+        let mut tpl = crate::template::Template::load_clipboard(self.session)?;
+        tpl.rotate_yaw(yaw)?;
+        tpl.save_clipboard(self.session)?;
+        Ok(tpl)
+    }
+
+    pub fn clipboard_flip(&mut self, axis: char) -> Result<crate::template::Template> {
+        let mut tpl = crate::template::Template::load_clipboard(self.session)?;
+        tpl.flip(axis)?;
+        tpl.save_clipboard(self.session)?;
+        Ok(tpl)
+    }
+
+    pub fn gen_terrain(
+        &mut self,
+        seed: u64,
+        dim: &str,
+        from_cx: i32,
+        from_cz: i32,
+        to_cx: i32,
+        to_cz: i32,
+    ) -> Result<Vec<String>> {
+        crate::pumpkin_bridge::generate_chunks(self, seed, dim, from_cx, from_cz, to_cx, to_cz)
+    }
+
+    pub fn fix_light(
+        &mut self,
+        from_cx: i32,
+        from_cz: i32,
+        to_cx: i32,
+        to_cz: i32,
+        seed: u64,
+        dim: &str,
+    ) -> Result<Vec<String>> {
+        crate::pumpkin_bridge::fix_light(self, from_cx, from_cz, to_cx, to_cz, seed, dim)
+    }
+
+    pub fn tick_participate(
+        &mut self,
+        from_cx: i32,
+        from_cz: i32,
+        to_cx: i32,
+        to_cz: i32,
+        rounds: u32,
+        random_tick_speed: u32,
+    ) -> Result<Vec<String>> {
+        crate::pumpkin_bridge::tick_participate(
+            self,
+            from_cx,
+            from_cz,
+            to_cx,
+            to_cz,
+            rounds,
+            random_tick_speed,
+        )
     }
 
     pub fn set_section(

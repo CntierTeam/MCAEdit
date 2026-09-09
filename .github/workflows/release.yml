@@ -32,6 +32,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Clone Pumpkin (GPL worldgen sibling)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/Pumpkin-MC/Pumpkin.git "${GITHUB_WORKSPACE}/../Pumpkin"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

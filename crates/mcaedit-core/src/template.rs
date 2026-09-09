@@ -176,40 +176,7 @@ impl Template {
         origin_y: i32,
         origin_z: i32,
     ) -> Result<Action> {
-        let [dx, dy, dz] = self.size;
-        let mut changes = Vec::new();
-        let mut i = 0usize;
-        for y in 0..dy as i32 {
-            for z in 0..dz as i32 {
-                for x in 0..dx as i32 {
-                    let id = *self
-                        .blocks
-                        .get(i)
-                        .ok_or_else(|| Error::msg("template blocks truncated"))?
-                        as usize;
-                    i += 1;
-                    let name = self
-                        .palette
-                        .get(id)
-                        .ok_or_else(|| Error::msg(format!("bad palette id {id}")))?;
-                    let after = BlockState::parse(name).map_err(Error::msg)?;
-                    let wx = origin_x + x;
-                    let wy = origin_y + y;
-                    let wz = origin_z + z;
-                    let before = world.get_block(wx, wy, wz)?;
-                    if before != after {
-                        changes.push(BlockChange {
-                            x: wx,
-                            y: wy,
-                            z: wz,
-                            before,
-                            after,
-                        });
-                    }
-                }
-            }
-        }
-
+        let changes = self.plan_paste_changes(world, origin_x, origin_y, origin_z)?;
         let mut dirty_chunks: BTreeMap<(i32, i32), crate::chunk::ChunkData> = BTreeMap::new();
         let mut section_map: BTreeMap<(i32, i32, i8), crate::palette::SectionBlocks> =
             BTreeMap::new();
@@ -293,6 +260,146 @@ impl Template {
         let action = world.session.history.push(action)?;
         world.session.mark_dirty()?;
         Ok(action)
+    }
+
+    /// Plan block changes for paste without writing (used by stack/move).
+    pub fn plan_paste_changes(
+        &self,
+        world: &WorldView<'_>,
+        origin_x: i32,
+        origin_y: i32,
+        origin_z: i32,
+    ) -> Result<Vec<BlockChange>> {
+        let [dx, dy, dz] = self.size;
+        let mut changes = Vec::new();
+        let mut i = 0usize;
+        for y in 0..dy as i32 {
+            for z in 0..dz as i32 {
+                for x in 0..dx as i32 {
+                    let id = *self
+                        .blocks
+                        .get(i)
+                        .ok_or_else(|| Error::msg("template blocks truncated"))?
+                        as usize;
+                    i += 1;
+                    let name = self
+                        .palette
+                        .get(id)
+                        .ok_or_else(|| Error::msg(format!("bad palette id {id}")))?;
+                    let after = BlockState::parse(name).map_err(Error::msg)?;
+                    let wx = origin_x + x;
+                    let wy = origin_y + y;
+                    let wz = origin_z + z;
+                    let before = world.get_block(wx, wy, wz)?;
+                    if before != after {
+                        changes.push(BlockChange {
+                            x: wx,
+                            y: wy,
+                            z: wz,
+                            before,
+                            after,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(changes)
+    }
+
+    pub fn clipboard_path(session: &crate::session::Session) -> PathBuf {
+        session.root.join("clipboard.json")
+    }
+
+    pub fn save_clipboard(&self, session: &crate::session::Session) -> Result<PathBuf> {
+        let path = Self::clipboard_path(session);
+        let mut clone = self.clone();
+        clone.name = "clipboard".into();
+        fs::write(&path, serde_json::to_string_pretty(&clone)?)?;
+        Ok(path)
+    }
+
+    pub fn load_clipboard(session: &crate::session::Session) -> Result<Self> {
+        let path = Self::clipboard_path(session);
+        if !path.exists() {
+            return Err(Error::msg("clipboard empty (edit copy first)"));
+        }
+        Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+    }
+
+    fn index_of(dx: u32, dz: u32, x: u32, y: u32, z: u32) -> usize {
+        ((y * dz + z) * dx + x) as usize
+    }
+
+    /// Rotate clipboard around +Y by yaw degrees (90 / 180 / 270 clockwise looking down).
+    pub fn rotate_yaw(&mut self, yaw: i32) -> Result<()> {
+        let yaw = yaw.rem_euclid(360);
+        if yaw == 0 {
+            return Ok(());
+        }
+        if !matches!(yaw, 90 | 180 | 270) {
+            return Err(Error::msg("rotate yaw must be 90, 180, or 270"));
+        }
+        let [dx, dy, dz] = self.size;
+        let (ndx, ndz) = if yaw == 180 { (dx, dz) } else { (dz, dx) };
+        let mut new_blocks = vec![0u16; (ndx * dy * ndz) as usize];
+        for y in 0..dy {
+            for z in 0..dz {
+                for x in 0..dx {
+                    let id = self.blocks[Self::index_of(dx, dz, x, y, z)];
+                    let (nx, nz) = match yaw {
+                        90 => (z, dx - 1 - x),
+                        180 => (dx - 1 - x, dz - 1 - z),
+                        270 => (dz - 1 - z, x),
+                        _ => unreachable!(),
+                    };
+                    new_blocks[Self::index_of(ndx, ndz, nx, y, nz)] = id;
+                }
+            }
+        }
+        self.blocks = new_blocks;
+        self.size = [ndx, dy, ndz];
+        for ent in &mut self.entities {
+            let (nx, nz) = match yaw {
+                90 => (ent.dz, (dx as f64) - 1.0 - ent.dx),
+                180 => ((dx as f64) - 1.0 - ent.dx, (dz as f64) - 1.0 - ent.dz),
+                270 => ((dz as f64) - 1.0 - ent.dz, ent.dx),
+                _ => unreachable!(),
+            };
+            ent.dx = nx;
+            ent.dz = nz;
+        }
+        Ok(())
+    }
+
+    /// Flip clipboard on axis `x` / `y` / `z`.
+    pub fn flip(&mut self, axis: char) -> Result<()> {
+        let axis = axis.to_ascii_lowercase();
+        let [dx, dy, dz] = self.size;
+        let mut new_blocks = vec![0u16; self.blocks.len()];
+        for y in 0..dy {
+            for z in 0..dz {
+                for x in 0..dx {
+                    let id = self.blocks[Self::index_of(dx, dz, x, y, z)];
+                    let (nx, ny, nz) = match axis {
+                        'x' => (dx - 1 - x, y, z),
+                        'y' => (x, dy - 1 - y, z),
+                        'z' => (x, y, dz - 1 - z),
+                        _ => return Err(Error::msg("flip axis must be x, y, or z")),
+                    };
+                    new_blocks[Self::index_of(dx, dz, nx, ny, nz)] = id;
+                }
+            }
+        }
+        self.blocks = new_blocks;
+        for ent in &mut self.entities {
+            match axis {
+                'x' => ent.dx = (dx as f64) - 1.0 - ent.dx,
+                'y' => ent.dy = (dy as f64) - 1.0 - ent.dy,
+                'z' => ent.dz = (dz as f64) - 1.0 - ent.dz,
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     pub fn brief_lines(&self) -> Vec<String> {

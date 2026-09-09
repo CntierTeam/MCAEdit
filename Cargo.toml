@@ -6,9 +6,9 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0"
 authors = ["CntierTeam"]
 repository = "https://github.com/CntierTeam/MCAEdit"
 
@@ -24,6 +24,13 @@ fastnbt = "2"
 flate2 = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 indexmap = { version = "2", features = ["serde"] }
+bytes = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+# GPL-3.0 Pumpkin (expects sibling checkout at ../Pumpkin — see CI / README)
+pumpkin-world = { path = "../Pumpkin/crates/pumpkin-world" }
+pumpkin-util = { path = "../Pumpkin/crates/pumpkin-util" }
+pumpkin-data = { path = "../Pumpkin/crates/pumpkin-data" }
+pumpkin-config = { path = "../Pumpkin/crates/pumpkin-config" }
 
 [profile.release]
 lto = true

@@ -177,6 +177,156 @@ enum EditCmd {
         #[arg(long)]
         block: String,
     },
+    /// Replace matching blocks in AABB (`--match air` = air-like)
+    Replace {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long = "match")]
+        match_block: String,
+        #[arg(long = "with")]
+        with_block: String,
+    },
+    Walls {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long)]
+        block: String,
+    },
+    Outline {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long)]
+        block: String,
+    },
+    Hollow {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+    },
+    Overlay {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long)]
+        block: String,
+    },
+    Sphere {
+        #[arg(long, help = "x,y,z center")]
+        at: String,
+        #[arg(long)]
+        radius: f64,
+        #[arg(long)]
+        block: String,
+        #[arg(long, default_value_t = false)]
+        hollow: bool,
+    },
+    Cyl {
+        #[arg(long, help = "x,z center")]
+        at: String,
+        #[arg(long)]
+        y: i32,
+        #[arg(long)]
+        radius: f64,
+        #[arg(long)]
+        height: i32,
+        #[arg(long)]
+        block: String,
+        #[arg(long, default_value_t = false)]
+        hollow: bool,
+    },
+    Stack {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long, default_value_t = 1)]
+        n: i32,
+        #[arg(long, default_value_t = 0)]
+        dx: i32,
+        #[arg(long, default_value_t = 0)]
+        dy: i32,
+        #[arg(long, default_value_t = 0)]
+        dz: i32,
+    },
+    Move {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long, default_value_t = 0)]
+        dx: i32,
+        #[arg(long, default_value_t = 0)]
+        dy: i32,
+        #[arg(long, default_value_t = 0)]
+        dz: i32,
+    },
+    Copy {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+    },
+    Cut {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+    },
+    Paste {
+        #[arg(long, help = "x,y,z origin")]
+        at: String,
+    },
+    /// Rotate session clipboard yaw (90/180/270)
+    Rotate {
+        #[arg(long)]
+        yaw: i32,
+    },
+    /// Flip session clipboard on axis x|y|z
+    Flip {
+        #[arg(long)]
+        axis: String,
+    },
+    /// Generate terrain with Pumpkin (writes session work region/)
+    Gen {
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        #[arg(long, default_value = "overworld")]
+        dim: String,
+        #[arg(long, help = "chunk x,z")]
+        from: String,
+        #[arg(long, help = "chunk x,z")]
+        to: String,
+    },
+    /// Recalculate sky/block light via Pumpkin LightEngine
+    FixLight {
+        #[arg(long, help = "chunk x,z")]
+        from: String,
+        #[arg(long, help = "chunk x,z")]
+        to: String,
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        #[arg(long, default_value = "overworld")]
+        dim: String,
+    },
+    /// Rebuild random-tick masks + step scheduled ticks (offline participate)
+    TickParticipate {
+        #[arg(long, help = "chunk x,z")]
+        from: String,
+        #[arg(long, help = "chunk x,z")]
+        to: String,
+        #[arg(long, default_value_t = 1)]
+        rounds: u32,
+        #[arg(long, default_value_t = 3)]
+        speed: u32,
+    },
     SetSection {
         #[arg(long)]
         cx: i32,
@@ -383,61 +533,248 @@ fn run() -> Result<()> {
         Commands::Edit { cmd } => {
             let mut s = open_session(&cwd, cli.session.as_deref())?;
             let mut world = WorldView::new(&mut s);
-            let action = match cmd {
-                EditCmd::SetBlock { x, y, z, block } => {
-                    let block = BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
-                    world.set_block(x, y, z, block)?
-                }
-                EditCmd::Fill { from, to, block } => {
+            match cmd {
+                EditCmd::Copy { from, to } => {
                     let (x1, y1, z1) = parse_xyz_i(&from)?;
                     let (x2, y2, z2) = parse_xyz_i(&to)?;
-                    let block = BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
-                    world.fill(x1, y1, z1, x2, y2, z2, block)?
+                    let tpl = world.clipboard_copy(x1, y1, z1, x2, y2, z2)?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string(&tpl)?);
+                    } else {
+                        for line in tpl.brief_lines() {
+                            println!("{line}");
+                        }
+                        println!("clipboard=saved");
+                    }
                 }
-                EditCmd::SetSection {
-                    cx,
-                    cy,
-                    cz,
-                    file,
+                EditCmd::Rotate { yaw } => {
+                    let tpl = world.clipboard_rotate_yaw(yaw)?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string(&tpl)?);
+                    } else {
+                        for line in tpl.brief_lines() {
+                            println!("{line}");
+                        }
+                        println!("clipboard=rotated yaw={yaw}");
+                    }
+                }
+                EditCmd::Flip { axis } => {
+                    let ch = axis
+                        .chars()
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("axis required"))?;
+                    let tpl = world.clipboard_flip(ch)?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string(&tpl)?);
+                    } else {
+                        for line in tpl.brief_lines() {
+                            println!("{line}");
+                        }
+                        println!("clipboard=flipped axis={axis}");
+                    }
+                }
+                EditCmd::Gen {
+                    seed,
+                    dim,
+                    from,
+                    to,
                 } => {
-                    let text = read_file_or_stdin(&file)?;
-                    let after: SectionDiff = serde_json::from_str(&text)
-                        .or_else(|_| {
-                            // allow {"cells":{"0,0,0":"minecraft:stone"}} ; void_air = keep existing
-                            let v: JsonValue = serde_json::from_str(&text)?;
-                            parse_section_diff_loose(&v)
-                        })
-                        .context("parse section diff")?;
-                    world.set_section(cx, cy, cz, after)?
+                    let (cx1, cz1) = parse_xz(&from)?;
+                    let (cx2, cz2) = parse_xz(&to)?;
+                    let lines = world.gen_terrain(seed, &dim, cx1, cz1, cx2, cz2)?;
+                    for line in lines {
+                        println!("{line}");
+                    }
                 }
-                EditCmd::Entity { cmd } => match cmd {
-                    EntityCmd::Spawn { file } => {
-                        let text = read_file_or_stdin(&file)?;
-                        let nbt: JsonValue = serde_json::from_str(&text)?;
-                        world.entity_spawn(nbt)?
+                EditCmd::FixLight {
+                    from,
+                    to,
+                    seed,
+                    dim,
+                } => {
+                    let (cx1, cz1) = parse_xz(&from)?;
+                    let (cx2, cz2) = parse_xz(&to)?;
+                    let lines = world.fix_light(cx1, cz1, cx2, cz2, seed, &dim)?;
+                    for line in lines {
+                        println!("{line}");
                     }
-                    EntityCmd::Rm { uuid, x, z } => world.entity_remove(&uuid, x, z)?,
-                    EntityCmd::Set {
-                        uuid,
-                        x,
-                        z,
-                        file,
-                    } => {
-                        let text = read_file_or_stdin(&file)?;
-                        let nbt: JsonValue = serde_json::from_str(&text)?;
-                        world.entity_set(&uuid, x, z, nbt)?
+                }
+                EditCmd::TickParticipate {
+                    from,
+                    to,
+                    rounds,
+                    speed,
+                } => {
+                    let (cx1, cz1) = parse_xz(&from)?;
+                    let (cx2, cz2) = parse_xz(&to)?;
+                    let lines = world.tick_participate(cx1, cz1, cx2, cz2, rounds, speed)?;
+                    for line in lines {
+                        println!("{line}");
                     }
-                },
-            };
-            if cli.json {
-                println!("{}", serde_json::to_string(&action)?);
-            } else {
-                println!(
-                    "action={} changed={} dirty=true desc={}",
-                    action.id,
-                    action.changed_count(),
-                    action.description
-                );
+                }
+                other => {
+                    let action = match other {
+                        EditCmd::SetBlock { x, y, z, block } => {
+                            let block =
+                                BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
+                            world.set_block(x, y, z, block)?
+                        }
+                        EditCmd::Fill { from, to, block } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            let block =
+                                BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
+                            world.fill(x1, y1, z1, x2, y2, z2, block)?
+                        }
+                        EditCmd::Replace {
+                            from,
+                            to,
+                            match_block,
+                            with_block,
+                        } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            let match_block = mcaedit_core::ops::parse_match_filter(&match_block)
+                                .map_err(|e| anyhow::anyhow!(e))?;
+                            let with_block = BlockState::parse(&with_block)
+                                .map_err(|e| anyhow::anyhow!(e))?;
+                            world.replace(x1, y1, z1, x2, y2, z2, match_block, with_block)?
+                        }
+                        EditCmd::Walls { from, to, block } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            let block =
+                                BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
+                            world.walls(x1, y1, z1, x2, y2, z2, block)?
+                        }
+                        EditCmd::Outline { from, to, block } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            let block =
+                                BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
+                            world.outline(x1, y1, z1, x2, y2, z2, block)?
+                        }
+                        EditCmd::Hollow { from, to } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            world.hollow(x1, y1, z1, x2, y2, z2)?
+                        }
+                        EditCmd::Overlay { from, to, block } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            let block =
+                                BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
+                            world.overlay(x1, y1, z1, x2, y2, z2, block)?
+                        }
+                        EditCmd::Sphere {
+                            at,
+                            radius,
+                            block,
+                            hollow,
+                        } => {
+                            let (cx, cy, cz) = parse_xyz_i(&at)?;
+                            let block =
+                                BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
+                            world.sphere(cx, cy, cz, radius, block, hollow)?
+                        }
+                        EditCmd::Cyl {
+                            at,
+                            y,
+                            radius,
+                            height,
+                            block,
+                            hollow,
+                        } => {
+                            let (cx, cz) = parse_xz(&at)?;
+                            let block =
+                                BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
+                            world.cyl(cx, cz, y, radius, height, block, hollow)?
+                        }
+                        EditCmd::Stack {
+                            from,
+                            to,
+                            n,
+                            dx,
+                            dy,
+                            dz,
+                        } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            world.stack(x1, y1, z1, x2, y2, z2, n, dx, dy, dz)?
+                        }
+                        EditCmd::Move {
+                            from,
+                            to,
+                            dx,
+                            dy,
+                            dz,
+                        } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            world.move_region(x1, y1, z1, x2, y2, z2, dx, dy, dz)?
+                        }
+                        EditCmd::Cut { from, to } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            world.clipboard_cut(x1, y1, z1, x2, y2, z2)?
+                        }
+                        EditCmd::Paste { at } => {
+                            let (x, y, z) = parse_xyz_i(&at)?;
+                            world.clipboard_paste(x, y, z)?
+                        }
+                        EditCmd::SetSection {
+                            cx,
+                            cy,
+                            cz,
+                            file,
+                        } => {
+                            let text = read_file_or_stdin(&file)?;
+                            let after: SectionDiff = serde_json::from_str(&text)
+                                .or_else(|_| {
+                                    let v: JsonValue = serde_json::from_str(&text)?;
+                                    parse_section_diff_loose(&v)
+                                })
+                                .context("parse section diff")?;
+                            world.set_section(cx, cy, cz, after)?
+                        }
+                        EditCmd::Entity { cmd } => match cmd {
+                            EntityCmd::Spawn { file } => {
+                                let text = read_file_or_stdin(&file)?;
+                                let nbt: JsonValue = serde_json::from_str(&text)?;
+                                world.entity_spawn(nbt)?
+                            }
+                            EntityCmd::Rm { uuid, x, z } => {
+                                world.entity_remove(&uuid, x, z)?
+                            }
+                            EntityCmd::Set {
+                                uuid,
+                                x,
+                                z,
+                                file,
+                            } => {
+                                let text = read_file_or_stdin(&file)?;
+                                let nbt: JsonValue = serde_json::from_str(&text)?;
+                                world.entity_set(&uuid, x, z, nbt)?
+                            }
+                        },
+                        EditCmd::Copy { .. }
+                        | EditCmd::Rotate { .. }
+                        | EditCmd::Flip { .. }
+                        | EditCmd::Gen { .. }
+                        | EditCmd::FixLight { .. }
+                        | EditCmd::TickParticipate { .. } => unreachable!(),
+                    };
+                    if cli.json {
+                        println!("{}", serde_json::to_string(&action)?);
+                    } else {
+                        println!(
+                            "action={} changed={} dirty=true desc={}",
+                            action.id,
+                            action.changed_count(),
+                            action.description
+                        );
+                    }
+                }
             }
         }
         Commands::History { cmd } => {
