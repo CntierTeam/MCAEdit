@@ -9,9 +9,18 @@ description = "LLM-friendly MCAEdit CLI"
 name = "mcaedit"
 path = "src/main.rs"
 
+[features]
+default = ["preview"]
+## Native live preview window (eframe/egui). Disable for ultra-minimal builds.
+preview = ["dep:eframe", "dep:egui", "dep:glam", "dep:winit"]
+
 [dependencies]
 mcaedit-core.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+eframe = { version = "0.31", optional = true, default-features = true }
+egui = { version = "0.31", optional = true }
+glam = { workspace = true, optional = true }
+winit = { version = "0.30", optional = true, default-features = false }

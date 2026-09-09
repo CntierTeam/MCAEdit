@@ -6,10 +6,10 @@ description: >-
   inspect, region ops (fill/replace/walls/outline/hollow/overlay/sphere/cyl/stack/move),
   brush (sphere/cyl/clipboard/biome), mask/% pattern, smooth / smooth3d, biome paint,
   clipboard, templates, schem import/export, history undo/redo, view screenshot,
-  terrain gen / fix-light / tick, and commit. Prefer shell execution over pasting
-  recipes. Trigger on: MCAEdit, mcaedit, MCA, Anvil, Linear region, offline region
-  edit, view screenshot, 截图, brush, schem, biome, smooth, smooth3d, 地形生成,
-  fix-light, tick, chunk palette, inspect select.
+  view preview (live window), terrain gen / fix-light / tick, and commit. Prefer shell
+  execution over pasting recipes. Trigger on: MCAEdit, mcaedit, MCA, Anvil, Linear
+  region, offline region edit, view screenshot, view preview, 截图, 预览, brush, schem,
+  biome, smooth, smooth3d, 地形生成, fix-light, tick, chunk palette, inspect select.
 license: GPL-3.0
 metadata:
   short-description: 代跑 mcaedit（session/edit/view/commit）
@@ -19,7 +19,7 @@ metadata:
 
 产品：**`mcaedit`** — 离线 Minecraft Anvil（`.mca`）/ Linear（`.linear`）编辑 CLI（**GPL-3.0**）。
 
-你是 **操作员**：用户要开 session、inspect、填方/替换/几何、brush、mask/% pattern、smooth/smooth3d、biome、剪贴板、模板、`.schem`、undo、地形 gen、fix-light、**tick**、view 截图、commit → **自己在 shell 执行 `mcaedit`**，不要只拼命令给用户。
+你是 **操作员**：用户要开 session、inspect、填方/替换/几何、brush、mask/% pattern、smooth/smooth3d、biome、剪贴板、模板、`.schem`、undo、地形 gen、fix-light、**tick**、view 截图 / **实时 preview**、commit → **自己在 shell 执行 `mcaedit`**，不要只拼命令给用户。
 
 ## Agent 硬规则
 
@@ -27,7 +27,7 @@ metadata:
    `curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/install.sh | bash`
    或仓库内：`./scripts/install.sh --from-source --symlink-skill --force`（会先 `scripts/ensure-vendor.sh`）。
 2. **禁止**用「组装指令 / 操作手册 / SAMPLE / YOUR_CLI / crates 开发讲义 / 我只能帮你校验」代替执行。短句说明 → 立刻跑 → 根据输出继续。
-3. 用户问「能不能填方 / brush / smooth / biome / schem / 生成地形 / 修光 / tick / 截图 / commit」→ **先答能**，再 **马上执行**。缺世界路径、session id、坐标、方块 id、seed 时只问缺的那一项，问完继续跑。
+3. 用户问「能不能填方 / brush / smooth / biome / schem / 生成地形 / 修光 / tick / 截图 / 预览 / commit」→ **先答能**，再 **马上执行**。缺世界路径、session id、坐标、方块 id、seed 时只问缺的那一项，问完继续跑。
 4. 命令名永远 **`mcaedit`**，禁止 `SAMPLE` / `YOUR_CLI`。
 5. **永远用 session**：`--session <id>` 或 `export MCAEDIT_SESSION=<id>`。编辑只改工作副本；**`commit`** 才写回源世界。可先 `commit --dry-run`。
 6. 方块 AABB 用 `--from x,y,z --to x,y,z`；brush 用 `--at` + `--radius`；`gen` / `fix-light` / `tick` 用 **chunk** `--from x,z --to x,z`。
@@ -49,6 +49,8 @@ mcaedit edit brush biome --at 0,70,0 --radius 8 --biome minecraft:desert
 mcaedit edit smooth3d --from 0,60,0 --to 15,80,15 --iterations 2 --kernel 1
 mcaedit edit tick --from 0,0 --to 0,0 --rounds 20 --speed 3
 mcaedit view screenshot --from 0,64,0 --to 7,66,7 --out /tmp/shot.png --width 640 --height 360
+# 另开终端：实时建造预览窗口（需 DISPLAY/Wayland）
+mcaedit view preview --from 0,64,0 --to 15,80,15 --watch 400
 mcaedit history list
 mcaedit commit --dry-run
 mcaedit commit
@@ -72,6 +74,7 @@ mcaedit commit
 | **修光照** | `edit fix-light --from cx,cz --to cx,cz [--seed] [--dim]` |
 | **离线 tick** | `edit tick --from cx,cz --to cx,cz --rounds N --speed N`（别名 `tick-participate`） |
 | **离线截图** | `view screenshot --from x,y,z --to x,y,z [--out] [--width] [--height] [--camera] [--look]` |
+| **实时预览** | `view preview` / `preview`（`--from/--to` 可选，`--watch` 轮询 ms；需显示器） |
 | 模板 | `template save\|list\|show\|paste\|rm\|export-schem\|import-schem` |
 | **`.schem`** | `schem export\|import\|info`（Sponge v2 写出；读 v2/v3） |
 | 撤销 / 重做 / 回退 | `history undo\|redo\|revert\|list` |
@@ -91,7 +94,7 @@ mcaedit edit replace --from 0,64,0 --to 15,70,15 --mask 'stone,dirt' --with mine
 mcaedit edit brush sphere --at 0,70,0 --radius 4 --block minecraft:sand --mask '#solid' --mask-exclude bedrock
 ```
 
-## Biome brush / smooth3d / tick
+## Biome brush / smooth3d / tick / preview
 
 ```bash
 # Biome brush：世界坐标球形/柱形，写入 4×4×4 biome cell；可选 mask（按 cell 原点方块）
@@ -104,6 +107,10 @@ mcaedit edit smooth3d --from 0,60,0 --to 31,80,31 --iterations 3 --kernel 1 --so
 
 # 离线 tick（一等公民）：步进 block_ticks/fluid_ticks + 近似 random-tick 生长（可 undo）
 mcaedit edit tick --from 0,0 --to 3,3 --rounds 40 --speed 3
+
+# 实时建造预览（另开终端；需 DISPLAY 或 Wayland；与 edit 并行看进度）
+mcaedit view preview --from 0,64,0 --to 31,80,31 --watch 400
+# 或：mcaedit preview --watch 500
 ```
 
 ## Linear region

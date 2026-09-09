@@ -6,9 +6,14 @@ use mcaedit_core::palette::SectionDiff;
 use mcaedit_core::session::Session;
 use mcaedit_core::template::Template;
 use mcaedit_core::view::ViewScreenshotRequest;
+#[cfg(feature = "preview")]
+use mcaedit_core::view::suggest_preview_aabb;
 use mcaedit_core::world::WorldView;
 use serde_json::Value as JsonValue;
 use std::path::PathBuf;
+
+#[cfg(feature = "preview")]
+mod preview;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -59,6 +64,20 @@ enum Commands {
     View {
         #[command(subcommand)]
         cmd: ViewCmd,
+    },
+    /// Live 3D preview window (alias of `view preview`)
+    Preview {
+        #[arg(long, help = "x,y,z focus AABB min (default: auto from work region)")]
+        from: Option<String>,
+        #[arg(long, help = "x,y,z focus AABB max")]
+        to: Option<String>,
+        /// Poll interval for session work-region reload (milliseconds)
+        #[arg(long, default_value_t = 400)]
+        watch: u64,
+        #[arg(long, default_value_t = 960)]
+        width: u32,
+        #[arg(long, default_value_t = 540)]
+        height: u32,
     },
     /// Write working copy MCA files back to the source world
     Commit {
@@ -600,11 +619,28 @@ enum ViewCmd {
         #[arg(long, help = "x,y,z look target")]
         look: Option<String>,
     },
+    /// Live native preview window (watch session work copy)
+    Preview {
+        #[arg(long, help = "x,y,z focus AABB min (default: auto from work region)")]
+        from: Option<String>,
+        #[arg(long, help = "x,y,z focus AABB max")]
+        to: Option<String>,
+        /// Poll interval for session work-region reload (milliseconds)
+        #[arg(long, default_value_t = 400)]
+        watch: u64,
+        #[arg(long, default_value_t = 960)]
+        width: u32,
+        #[arg(long, default_value_t = 540)]
+        height: u32,
+    },
 }
 
 fn main() -> Result<()> {
-    // `mca` region encode/decode needs a large stack; Windows main-thread default (~1MiB)
-    // overflows on first set-block. Mirror the integration-test worker stack.
+    // Preview owns a winit event loop — must stay on the OS main thread.
+    // Other commands spawn a 16MiB stack worker (Windows MCA encode overflows ~1MiB).
+    if is_preview_invocation() {
+        return run();
+    }
     const STACK: usize = 16 * 1024 * 1024;
     std::thread::Builder::new()
         .name("mcaedit-main".into())
@@ -613,6 +649,33 @@ fn main() -> Result<()> {
         .context("spawn mcaedit worker")?
         .join()
         .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
+
+/// True for `mcaedit preview` / `mcaedit view preview` (global flags ignored).
+fn is_preview_invocation() -> bool {
+    let mut args = std::env::args().skip(1);
+    let mut positionals = Vec::new();
+    while let Some(a) = args.next() {
+        if a == "--session" {
+            let _ = args.next();
+            continue;
+        }
+        if a.starts_with("--session=") || a == "--json" || a == "-h" || a == "--help" || a == "-V" || a == "--version" {
+            continue;
+        }
+        if a.starts_with('-') {
+            continue;
+        }
+        positionals.push(a);
+    }
+    matches!(
+        positionals
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["preview", ..] | ["view", "preview", ..]
+    )
 }
 
 fn run() -> Result<()> {
@@ -1290,7 +1353,6 @@ fn run() -> Result<()> {
         },
         Commands::View { cmd } => {
             let mut s = open_session(&cwd, cli.session.as_deref())?;
-            let world = WorldView::new(&mut s);
             match cmd {
                 ViewCmd::Screenshot {
                     from,
@@ -1301,6 +1363,7 @@ fn run() -> Result<()> {
                     camera,
                     look,
                 } => {
+                    let world = WorldView::new(&mut s);
                     let (x1, y1, z1) = parse_xyz_i(&from)?;
                     let (x2, y2, z2) = parse_xyz_i(&to)?;
                     let camera = camera.as_deref().map(parse_xyz_f32).transpose()?;
@@ -1329,7 +1392,26 @@ fn run() -> Result<()> {
                         rep.triangles
                     );
                 }
+                ViewCmd::Preview {
+                    from,
+                    to,
+                    watch,
+                    width,
+                    height,
+                } => {
+                    run_preview_cmd(&cwd, &s, from, to, watch, width, height)?;
+                }
             }
+        }
+        Commands::Preview {
+            from,
+            to,
+            watch,
+            width,
+            height,
+        } => {
+            let s = open_session(&cwd, cli.session.as_deref())?;
+            run_preview_cmd(&cwd, &s, from, to, watch, width, height)?;
         }
         Commands::Commit { dry_run } => {
             let mut s = open_session(&cwd, cli.session.as_deref())?;
@@ -1351,6 +1433,57 @@ fn open_session(cwd: &std::path::Path, session: Option<&str>) -> Result<Session>
     match session {
         Some(id) => Ok(Session::open(cwd, id)?),
         None => Ok(Session::open_default(cwd)?),
+    }
+}
+
+fn run_preview_cmd(
+    cwd: &std::path::Path,
+    session: &Session,
+    from: Option<String>,
+    to: Option<String>,
+    watch: u64,
+    width: u32,
+    height: u32,
+) -> Result<()> {
+    #[cfg(not(feature = "preview"))]
+    {
+        let _ = (cwd, session, from, to, watch, width, height);
+        bail!(
+            "preview feature disabled; rebuild with `--features preview` (default on release builds)"
+        );
+    }
+    #[cfg(feature = "preview")]
+    {
+        let pinned_from = from.as_deref().map(parse_xyz_i).transpose()?;
+        let pinned_to = to.as_deref().map(parse_xyz_i).transpose()?;
+        if pinned_from.is_some() != pinned_to.is_some() {
+            bail!("preview needs both --from and --to, or neither (auto AABB)");
+        }
+        let (show_from, show_to) = match (pinned_from, pinned_to) {
+            (Some(f), Some(t)) => (f, t),
+            _ => suggest_preview_aabb(session)?,
+        };
+        println!(
+            "preview session={} aabb=({},{},{})..({},{},{}) watch={}ms (needs DISPLAY/Wayland)",
+            session.meta.id,
+            show_from.0,
+            show_from.1,
+            show_from.2,
+            show_to.0,
+            show_to.1,
+            show_to.2,
+            watch
+        );
+        preview::run_preview(preview::PreviewOptions {
+            session_id: session.meta.id.clone(),
+            cwd: cwd.to_path_buf(),
+            from: pinned_from,
+            to: pinned_to,
+            watch_ms: watch,
+            width,
+            height,
+        })?;
+        Ok(())
     }
 }
 

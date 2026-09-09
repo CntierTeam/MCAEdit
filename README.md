@@ -4,7 +4,7 @@ Offline Minecraft Anvil (`.mca`) editor CLI for LLMs — **GPL-3.0**（含地形
 
 仓库：[CntierTeam/MCAEdit](https://github.com/CntierTeam/MCAEdit)
 
-Flow: `session create` → `inspect` / `edit` / `view screenshot`（区域编辑 + **gen / fix-light / tick**）→ `history` → `commit`
+Flow: `session create` → `inspect` / `edit` / `view screenshot` / **`view preview`**（区域编辑 + **gen / fix-light / tick**）→ `history` → `commit`
 
 本仓库同时提供 **Codex Skill**（`$mcaedit`）：**操作员代跑 / execute-first**——在 shell 直接跑 `mcaedit`（session / inspect / edit / commit），不是只拼命令。
 
@@ -32,7 +32,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Force
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/install.sh \
-  | bash -s -- --version v0.5.1 --force
+  | bash -s -- --version v0.6.0 --force
 ./scripts/install.sh --from-source --symlink-skill --force
 ./scripts/install.sh --uninstall
 ```
@@ -76,8 +76,8 @@ mcaedit --session demo edit tick --from 0,0 --to 3,3 --rounds 40 --speed 3
 产物：`mcaedit-<target>.tar.gz`、`mcaedit-skill.tar.gz`、`install.sh` / `install.ps1`。
 
 ```bash
-git tag v0.5.1
-git push origin v0.5.1
+git tag v0.6.0
+git push origin v0.6.0
 ```
 
 ## Region edits
@@ -140,7 +140,7 @@ mcaedit template import-schem --file /tmp/hut.schem --name hut
 
 写出 Sponge Schematic **v2**；读取支持 v2/v3。
 
-## Offline view screenshot
+## Offline view screenshot / live preview
 
 `view screenshot` 会从 session 工作副本的选区构建可见面网格并离线渲成 PNG，适合直接给 LLM 读图（不依赖 Node/dotnet/浏览器）。
 
@@ -152,6 +152,21 @@ mcaedit --session demo view screenshot \
 ```
 
 可选：`--camera x,y,z` 与 `--look x,y,z` 覆盖默认取景。
+
+**`view preview` / `preview`** 打开原生窗口，轮询 session 工作副本 `region/*.mca`、`meta.json`、`HEAD`，在另一终端跑 `edit fill/brush/...` 时可看实时建造进度（face-cull 软光栅，与 screenshot 共用 mesh）。
+
+```bash
+# 终端 A：预览（需要 DISPLAY 或 Wayland）
+mcaedit --session demo view preview --from 0,64,0 --to 31,80,31 --watch 400
+# 或省略 --from/--to，按工作区 chunk 自动裁到 ≤48³
+mcaedit --session demo preview --watch 500
+
+# 终端 B：边建边看
+mcaedit --session demo edit fill --from 0,64,0 --to 15,70,15 --pattern '50%stone,50%dirt'
+mcaedit --session demo edit brush sphere --at 8,72,8 --radius 4 --block minecraft:glass
+```
+
+操作：LMB 轨道旋转、RMB/中键平移、滚轮缩放、空格切换 auto-orbit。无显示器的 CI/SSH 不要开窗口；cargo feature `preview` 默认开启（`--no-default-features` 可关掉 GUI 依赖）。
 
 Clipboard（会话内）：
 
@@ -165,7 +180,7 @@ mcaedit --session demo edit cut --from 0,64,0 --to 3,65,2
 
 对照表见 skill：`.codex/skills/mcaedit/references/region-ops.md`。本功能的离线取景/渲染思路参考 [Arcus92/minecraft-web-viewer](https://github.com/Arcus92/minecraft-web-viewer) 与 [Arcus92/minecraft-web-exporter](https://github.com/Arcus92/minecraft-web-exporter)（MIT）。
 
-已知限制：biome 为 section 内 4×4×4；离线 tick 为近似生长 + scheduled 队列步进（非完整服务端）；Linear 工作副本以 Anvil 编辑后按源格式写回。
+已知限制：biome 为 section 内 4×4×4；离线 tick 为近似生长 + scheduled 队列步进（非完整服务端）；Linear 工作副本以 Anvil 编辑后按源格式写回；preview 为调色板色块体素、无完整 MC 贴图/模型。
 ## Multi-session collaboration
 
 ```bash
