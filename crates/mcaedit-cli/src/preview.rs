@@ -24,6 +24,8 @@ pub struct PreviewOptions {
 }
 
 pub fn run_preview(opts: PreviewOptions) -> Result<()> {
+    // Linux X11/Wayland need an explicit display; macOS/Windows use the native GUI stack.
+    #[cfg(all(unix, not(target_os = "macos")))]
     if std::env::var_os("DISPLAY").is_none()
         && std::env::var_os("WAYLAND_DISPLAY").is_none()
         && std::env::var_os("MCAEDIT_PREVIEW_ALLOW_HEADLESS").is_none()
@@ -47,16 +49,17 @@ pub fn run_preview(opts: PreviewOptions) -> Result<()> {
             .with_title(format!("MCAEdit preview — {}", opts.session_id)),
         ..Default::default()
     };
-    // Safety net if preview is ever started off the OS main thread.
-    native_options.event_loop_builder = Some(Box::new(|builder| {
+    // Safety net if preview is ever started off the OS main thread (Linux only).
+    // Prefix `_builder` so macOS/Windows clippy stays clean under `-D warnings`.
+    native_options.event_loop_builder = Some(Box::new(|_builder| {
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             if std::env::var_os("WAYLAND_DISPLAY").is_some() {
                 use winit::platform::wayland::EventLoopBuilderExtWayland;
-                EventLoopBuilderExtWayland::with_any_thread(builder, true);
+                EventLoopBuilderExtWayland::with_any_thread(_builder, true);
             } else {
                 use winit::platform::x11::EventLoopBuilderExtX11;
-                EventLoopBuilderExtX11::with_any_thread(builder, true);
+                EventLoopBuilderExtX11::with_any_thread(_builder, true);
             }
         }
     }));
