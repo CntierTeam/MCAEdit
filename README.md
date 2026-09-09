@@ -1,16 +1,16 @@
 # MCAEdit
 
-Offline Minecraft Anvil (`.mca`) editor CLI for LLMs — **GPL-3.0**（链接 [Pumpkin](https://github.com/Pumpkin-MC/Pumpkin) 地形生成 / 光照）。
+Offline Minecraft Anvil (`.mca`) editor CLI for LLMs — **GPL-3.0**（含地形生成 / 光照）。
 
 仓库：[CntierTeam/MCAEdit](https://github.com/CntierTeam/MCAEdit)
 
-Flow: `session create` → `inspect` / `edit`（WorldEdit 子集 + **gen / fix-light / tick-participate**）→ `history` → `commit`
+Flow: `session create` → `inspect` / `edit` / `view screenshot`（区域编辑 + **gen / fix-light / tick-participate**）→ `history` → `commit`
 
 本仓库同时提供 **Codex Skill**（`$mcaedit`）：**操作员代跑 / execute-first**——在 shell 直接跑 `mcaedit`（session / inspect / edit / commit），不是只拼命令。
 
 ## 许可
 
-本项目与 Pumpkin 相同，使用 **GNU GPL v3**。分发二进制时须提供对应源码。
+本项目使用 **GNU GPL v3**。分发二进制时须提供对应源码。
 
 ## 一键安装（从 GitHub Release）
 
@@ -32,25 +32,25 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Force
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/install.sh \
-  | bash -s -- --version v0.3.0 --force
+  | bash -s -- --version v0.3.1 --force
 ./scripts/install.sh --from-source --symlink-skill --force
 ./scripts/install.sh --uninstall
 ```
 
 ## 从源码构建
 
-需在**同级目录**克隆 Pumpkin（`Cargo.toml` 依赖 `../Pumpkin/crates/pumpkin-*`）：
+地形栈在仓库内 submodule：`vendor/pumpkin`（`scripts/ensure-vendor.sh` 会 init/浅克隆，并修补嵌套 workspace 继承）。
 
 ```bash
-cd .. # IdeaProjects /
-git clone --depth 1 https://github.com/Pumpkin-MC/Pumpkin.git Pumpkin
-cd MCAEdit
+bash scripts/ensure-vendor.sh
 rustup default stable
 cargo build --release -p mcaedit-cli
 ./target/release/mcaedit --help
 ```
 
-## Pumpkin：地形 / 光照 / tick
+或：`./scripts/install.sh --from-source --force`（内部会先 ensure-vendor）。
+
+## 地形 / 光照 / tick
 
 坐标为 **chunk**（`--from x,z --to x,z`）：
 
@@ -60,9 +60,9 @@ mcaedit --session demo edit fix-light --from 0,0 --to 3,3 --seed 42 --dim overwo
 mcaedit --session demo edit tick-participate --from 0,0 --to 3,3 --rounds 20 --speed 3
 ```
 
-- `gen`：Pumpkin Full 阶段写入 session 工作副本 `region/`
-- `fix-light`：`LightEngine::initialize_light` 重算天空/方块光
-- `tick-participate`：重建 random-tick mask，采样候选，步进 `block_ticks`/`fluid_ticks`（完整作物等行为在 Pumpkin 服务端）
+- `gen`：Full 阶段写入 session 工作副本 `region/`
+- `fix-light`：重算天空/方块光
+- `tick-participate`：重建 random-tick mask，采样候选，步进 `block_ticks`/`fluid_ticks`（完整作物等行为需服务端）
 
 `--dim`：`overworld` / `nether` / `end`。
 
@@ -76,11 +76,11 @@ mcaedit --session demo edit tick-participate --from 0,0 --to 3,3 --rounds 20 --s
 产物：`mcaedit-<target>.tar.gz`、`mcaedit-skill.tar.gz`、`install.sh` / `install.ps1`。
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
-## WorldEdit-style edits
+## Region edits
 
 选区一律 `--from x,y,z --to x,y,z`（无 pos1/pos2）。
 
@@ -99,6 +99,19 @@ mcaedit --session demo edit stack --from 0,64,0 --to 2,64,2 --n 3 --dx 4 --dy 0 
 mcaedit --session demo edit move --from 0,64,0 --to 2,64,2 --dx 8 --dy 0 --dz 0
 ```
 
+## Offline view screenshot
+
+`view screenshot` 会从 session 工作副本的选区构建可见面网格并离线渲成 PNG，适合直接给 LLM 读图（不依赖 Node/dotnet/浏览器）。
+
+```bash
+mcaedit --session demo view screenshot \
+  --from 0,64,0 --to 31,80,31 \
+  --out /tmp/shot.png \
+  --width 1280 --height 720
+```
+
+可选：`--camera x,y,z` 与 `--look x,y,z` 覆盖默认取景。
+
 Clipboard（会话内）：
 
 ```bash
@@ -109,9 +122,9 @@ mcaedit --session demo edit paste --at 32,64,32
 mcaedit --session demo edit cut --from 0,64,0 --to 3,65,2
 ```
 
-对照表见 skill：`.codex/skills/mcaedit/references/worldedit-map.md`。
+对照表见 skill：`.codex/skills/mcaedit/references/region-ops.md`。本功能的离线取景/渲染思路参考 [Arcus92/minecraft-web-viewer](https://github.com/Arcus92/minecraft-web-viewer) 与 [Arcus92/minecraft-web-exporter](https://github.com/Arcus92/minecraft-web-exporter)（MIT）。
 
-**未实现：** brush、复杂 mask、百分比 pattern、`//smooth`、生物群系、`.schem` 互通。
+**未实现：** brush、复杂 mask、百分比 pattern、smooth、生物群系、`.schem` 互通。
 
 ## Multi-session collaboration
 

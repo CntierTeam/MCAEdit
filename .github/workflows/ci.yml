@@ -20,11 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Clone Pumpkin (GPL worldgen sibling)
+      - name: Vendor worldgen stack
         shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 https://github.com/Pumpkin-MC/Pumpkin.git "${GITHUB_WORKSPACE}/../Pumpkin"
+        run: bash scripts/ensure-vendor.sh
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -51,8 +49,10 @@ jobs:
           "${BIN}" session create --world "${ROOT}/world" --id ci --label ci
           "${BIN}" --session ci edit set-block --x 0 --y 64 --z 0 --block minecraft:stone
           "${BIN}" --session ci inspect get --x 0 --y 64 --z 0 | grep -q stone
+          "${BIN}" --session ci view screenshot --from 0,64,0 --to 1,65,1 --out "${ROOT}/shot.png" --width 64 --height 64
+          test -f "${ROOT}/shot.png"
           "${BIN}" --session ci commit
-          # Pumpkin gen + fix-light + tick (single chunk)
+          # gen + fix-light + tick (single chunk)
           "${BIN}" --session ci edit gen --seed 1 --dim overworld --from 0,0 --to 0,0
           "${BIN}" --session ci edit fix-light --from 0,0 --to 0,0 --seed 1
           "${BIN}" --session ci edit tick-participate --from 0,0 --to 0,0 --rounds 1

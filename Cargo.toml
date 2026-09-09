@@ -4,9 +4,10 @@ members = [
     "crates/mcaedit-core",
     "crates/mcaedit-cli",
 ]
+exclude = ["vendor/pumpkin"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "GPL-3.0"
 authors = ["CntierTeam"]
@@ -26,11 +27,13 @@ uuid = { version = "1", features = ["v4", "serde"] }
 indexmap = { version = "2", features = ["serde"] }
 bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
-# GPL-3.0 Pumpkin (expects sibling checkout at ../Pumpkin — see CI / README)
-pumpkin-world = { path = "../Pumpkin/crates/pumpkin-world" }
-pumpkin-util = { path = "../Pumpkin/crates/pumpkin-util" }
-pumpkin-data = { path = "../Pumpkin/crates/pumpkin-data" }
-pumpkin-config = { path = "../Pumpkin/crates/pumpkin-config" }
+glam = "0.30"
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Path into submodule; ensure-vendor.sh patches package.workspace so nested inherit works.
+pumpkin-world = { path = "vendor/pumpkin/crates/pumpkin-world" }
+pumpkin-util = { path = "vendor/pumpkin/crates/pumpkin-util" }
+pumpkin-data = { path = "vendor/pumpkin/crates/pumpkin-data" }
+pumpkin-config = { path = "vendor/pumpkin/crates/pumpkin-config" }
 
 [profile.release]
 lto = true

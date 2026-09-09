@@ -222,6 +222,7 @@ install_from_source() {
 
   if [[ "${INSTALL_BIN}" -eq 1 ]]; then
     need_cmd cargo
+    bash "${repo_root}/scripts/ensure-vendor.sh"
     (cd "${repo_root}" && cargo build --release -p mcaedit-cli)
     built="${repo_root}/target/release/${BIN_NAME}"
     if [[ ! -f "${built}" && "${BIN_NAME}" == "mcaedit.exe" ]]; then

@@ -3,7 +3,7 @@ name = "mcaedit-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Offline MCA edit session, history, commit, and Pumpkin worldgen bridge"
+description = "Offline MCA edit session, history, commit, and worldgen bridge"
 
 [dependencies]
 anyhow.workspace = true
@@ -15,6 +15,8 @@ fastnbt.workspace = true
 uuid.workspace = true
 indexmap.workspace = true
 bytes.workspace = true
+glam.workspace = true
+image.workspace = true
 pumpkin-world.workspace = true
 pumpkin-util.workspace = true
 pumpkin-data.workspace = true

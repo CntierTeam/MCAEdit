@@ -1,0 +1,5 @@
+[submodule "vendor/pumpkin"]
+	path = vendor/pumpkin
+	url = https://github.com/Pumpkin-MC/Pumpkin.git
+	branch = master
+	shallow = true

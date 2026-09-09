@@ -11,10 +11,11 @@ pub mod error;
 pub mod history;
 pub mod ops;
 pub mod palette;
-pub mod pumpkin_bridge;
+pub mod terrain_bridge;
 pub mod region;
 pub mod session;
 pub mod template;
+pub mod view;
 pub mod world;
 
 pub use action::{Action, ActionPayload, BlockChange};

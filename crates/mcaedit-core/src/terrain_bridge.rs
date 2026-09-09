@@ -1,4 +1,4 @@
-//! Bridge to Pumpkin (`pumpkin-world`) for terrain gen, lighting, and tick participation.
+//! Bridge to vendored `pumpkin-world` for terrain gen, lighting, and tick participation.
 //!
 //! MCAEdit is GPL-3.0 because it links this GPL code.
 
@@ -93,7 +93,7 @@ fn read_pumpkin_chunk(region_dir: &Path, cx: i32, cz: i32) -> Result<Option<Pump
     Ok(Some(chunk))
 }
 
-/// Generate vanilla-compatible terrain into the session work `region/` via Pumpkin.
+/// Generate vanilla-compatible terrain into the session work `region/`.
 pub fn generate_chunks(
     world: &mut WorldView<'_>,
     seed: u64,
@@ -163,7 +163,7 @@ fn copy_level_into_proto(
     proto
 }
 
-/// Recalculate sky/block light for chunk AABB using Pumpkin `LightEngine`.
+/// Recalculate sky/block light for chunk AABB.
 pub fn fix_light(
     world: &mut WorldView<'_>,
     from_cx: i32,
@@ -221,7 +221,7 @@ pub fn fix_light(
 
 /// Rebuild random-tick participation masks and advance scheduled block/fluid ticks.
 ///
-/// Full block random-tick *behaviour* lives in the Pumpkin server crate; offline we:
+/// Full block random-tick *behaviour* lives in the server crate; offline we:
 /// 1. rebuild `randomly_ticking_mask` / section caches
 /// 2. sample random-tick candidates (`--rounds`)
 /// 3. step scheduled tick queues (`block_ticks` / `fluid_ticks`) for `--rounds`

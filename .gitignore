@@ -1,3 +1,6 @@
 /target
 /.mcaedit
 **/*.rs.bk
+
+# filled by scripts/ensure-vendor.sh / submodule init
+# (gitlink itself is tracked; ignore stray non-submodule trees)

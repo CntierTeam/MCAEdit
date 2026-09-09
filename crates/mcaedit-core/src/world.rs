@@ -523,7 +523,7 @@ impl<'a> WorldView<'a> {
         to_cx: i32,
         to_cz: i32,
     ) -> Result<Vec<String>> {
-        crate::pumpkin_bridge::generate_chunks(self, seed, dim, from_cx, from_cz, to_cx, to_cz)
+        crate::terrain_bridge::generate_chunks(self, seed, dim, from_cx, from_cz, to_cx, to_cz)
     }
 
     pub fn fix_light(
@@ -535,7 +535,7 @@ impl<'a> WorldView<'a> {
         seed: u64,
         dim: &str,
     ) -> Result<Vec<String>> {
-        crate::pumpkin_bridge::fix_light(self, from_cx, from_cz, to_cx, to_cz, seed, dim)
+        crate::terrain_bridge::fix_light(self, from_cx, from_cz, to_cx, to_cz, seed, dim)
     }
 
     pub fn tick_participate(
@@ -547,7 +547,7 @@ impl<'a> WorldView<'a> {
         rounds: u32,
         random_tick_speed: u32,
     ) -> Result<Vec<String>> {
-        crate::pumpkin_bridge::tick_participate(
+        crate::terrain_bridge::tick_participate(
             self,
             from_cx,
             from_cz,

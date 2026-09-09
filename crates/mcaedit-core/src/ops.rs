@@ -1,4 +1,4 @@
-//! WorldEdit-style region geometry helpers (AABB / sphere / cylinder).
+//! Region geometry helpers (AABB / sphere / cylinder).
 
 use crate::blockstate::BlockState;
 

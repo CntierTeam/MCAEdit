@@ -5,6 +5,7 @@ use mcaedit_core::commit::commit_session;
 use mcaedit_core::palette::SectionDiff;
 use mcaedit_core::session::Session;
 use mcaedit_core::template::Template;
+use mcaedit_core::view::ViewScreenshotRequest;
 use mcaedit_core::world::WorldView;
 use serde_json::Value as JsonValue;
 use std::path::PathBuf;
@@ -49,6 +50,10 @@ enum Commands {
     Template {
         #[command(subcommand)]
         cmd: TemplateCmd,
+    },
+    View {
+        #[command(subcommand)]
+        cmd: ViewCmd,
     },
     /// Write working copy MCA files back to the source world
     Commit {
@@ -294,7 +299,7 @@ enum EditCmd {
         #[arg(long)]
         axis: String,
     },
-    /// Generate terrain with Pumpkin (writes session work region/)
+    /// Generate terrain into session work region/
     Gen {
         #[arg(long, default_value_t = 0)]
         seed: u64,
@@ -305,7 +310,7 @@ enum EditCmd {
         #[arg(long, help = "chunk x,z")]
         to: String,
     },
-    /// Recalculate sky/block light via Pumpkin LightEngine
+    /// Recalculate sky/block light for chunk AABB
     FixLight {
         #[arg(long, help = "chunk x,z")]
         from: String,
@@ -385,6 +390,27 @@ enum HistoryCmd {
     Revert {
         #[arg(long)]
         to: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ViewCmd {
+    /// Offline 3D screenshot for LLM vision (PNG)
+    Screenshot {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value_t = 1280)]
+        width: u32,
+        #[arg(long, default_value_t = 720)]
+        height: u32,
+        #[arg(long, help = "x,y,z camera position")]
+        camera: Option<String>,
+        #[arg(long, help = "x,y,z look target")]
+        look: Option<String>,
     },
 }
 
@@ -866,6 +892,49 @@ fn run() -> Result<()> {
                 println!("deleted={name}");
             }
         },
+        Commands::View { cmd } => {
+            let mut s = open_session(&cwd, cli.session.as_deref())?;
+            let world = WorldView::new(&mut s);
+            match cmd {
+                ViewCmd::Screenshot {
+                    from,
+                    to,
+                    out,
+                    width,
+                    height,
+                    camera,
+                    look,
+                } => {
+                    let (x1, y1, z1) = parse_xyz_i(&from)?;
+                    let (x2, y2, z2) = parse_xyz_i(&to)?;
+                    let camera = camera.as_deref().map(parse_xyz_f32).transpose()?;
+                    let look = look.as_deref().map(parse_xyz_f32).transpose()?;
+                    let out_path = out.unwrap_or_else(|| {
+                        let ts = unix_ts();
+                        world.session.root.join(format!("view-{ts}.png"))
+                    });
+                    let req = ViewScreenshotRequest {
+                        from: (x1, y1, z1),
+                        to: (x2, y2, z2),
+                        width,
+                        height,
+                        camera,
+                        look,
+                        out: out_path,
+                    };
+                    let rep = world.view_screenshot(&req)?;
+                    println!(
+                        "screenshot={} size={}x{} blocks={} faces={} triangles={}",
+                        rep.out.display(),
+                        rep.width,
+                        rep.height,
+                        rep.blocks,
+                        rep.faces,
+                        rep.triangles
+                    );
+                }
+            }
+        }
         Commands::Commit { dry_run } => {
             let mut s = open_session(&cwd, cli.session.as_deref())?;
             let report = commit_session(&cwd, &mut s, dry_run)?;
@@ -921,6 +990,18 @@ fn parse_xyz_i(s: &str) -> Result<(i32, i32, i32)> {
         bail!("expected x,y,z got `{s}`");
     }
     Ok((parts[0].parse()?, parts[1].parse()?, parts[2].parse()?))
+}
+
+fn parse_xyz_f32(s: &str) -> Result<(f32, f32, f32)> {
+    let (x, y, z) = parse_xyz(s)?;
+    Ok((x as f32, y as f32, z as f32))
+}
+
+fn unix_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn read_file_or_stdin(path: &str) -> Result<String> {
