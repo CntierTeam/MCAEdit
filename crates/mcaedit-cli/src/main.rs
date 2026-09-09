@@ -78,6 +78,15 @@ enum Commands {
         width: u32,
         #[arg(long, default_value_t = 540)]
         height: u32,
+        /// Minecraft client jar or versions/<ver> directory (default: auto-detect 26.2)
+        #[arg(long, env = "MCAEDIT_MINECRAFT_JAR")]
+        minecraft: Option<PathBuf>,
+        /// Explicit assets/client jar (alias of --minecraft; env MCAEDIT_ASSETS_JAR)
+        #[arg(long = "assets-jar", env = "MCAEDIT_ASSETS_JAR")]
+        assets_jar: Option<PathBuf>,
+        /// Force solid palette colors (skip jar textures)
+        #[arg(long)]
+        no_textures: bool,
     },
     /// Write working copy MCA files back to the source world
     Commit {
@@ -618,6 +627,15 @@ enum ViewCmd {
         camera: Option<String>,
         #[arg(long, help = "x,y,z look target")]
         look: Option<String>,
+        /// Minecraft client jar or versions/<ver> directory (default: auto-detect 26.2)
+        #[arg(long, env = "MCAEDIT_MINECRAFT_JAR")]
+        minecraft: Option<PathBuf>,
+        /// Explicit assets/client jar (env MCAEDIT_ASSETS_JAR)
+        #[arg(long = "assets-jar", env = "MCAEDIT_ASSETS_JAR")]
+        assets_jar: Option<PathBuf>,
+        /// Force solid palette colors (skip jar textures)
+        #[arg(long)]
+        no_textures: bool,
     },
     /// Live native preview window (watch session work copy)
     Preview {
@@ -632,6 +650,15 @@ enum ViewCmd {
         width: u32,
         #[arg(long, default_value_t = 540)]
         height: u32,
+        /// Minecraft client jar or versions/<ver> directory (default: auto-detect 26.2)
+        #[arg(long, env = "MCAEDIT_MINECRAFT_JAR")]
+        minecraft: Option<PathBuf>,
+        /// Explicit assets/client jar (env MCAEDIT_ASSETS_JAR)
+        #[arg(long = "assets-jar", env = "MCAEDIT_ASSETS_JAR")]
+        assets_jar: Option<PathBuf>,
+        /// Force solid palette colors (skip jar textures)
+        #[arg(long)]
+        no_textures: bool,
     },
 }
 
@@ -1362,6 +1389,9 @@ fn run() -> Result<()> {
                     height,
                     camera,
                     look,
+                    minecraft,
+                    assets_jar,
+                    no_textures,
                 } => {
                     let world = WorldView::new(&mut s);
                     let (x1, y1, z1) = parse_xyz_i(&from)?;
@@ -1380,16 +1410,20 @@ fn run() -> Result<()> {
                         camera,
                         look,
                         out: out_path,
+                        minecraft,
+                        assets_jar,
+                        no_textures,
                     };
                     let rep = world.view_screenshot(&req)?;
                     println!(
-                        "screenshot={} size={}x{} blocks={} faces={} triangles={}",
+                        "screenshot={} size={}x{} blocks={} faces={} triangles={} textures={}",
                         rep.out.display(),
                         rep.width,
                         rep.height,
                         rep.blocks,
                         rep.faces,
-                        rep.triangles
+                        rep.triangles,
+                        rep.textures
                     );
                 }
                 ViewCmd::Preview {
@@ -1398,8 +1432,24 @@ fn run() -> Result<()> {
                     watch,
                     width,
                     height,
+                    minecraft,
+                    assets_jar,
+                    no_textures,
                 } => {
-                    run_preview_cmd(&cwd, &s, from, to, watch, width, height)?;
+                    run_preview_cmd(
+                        &cwd,
+                        &s,
+                        PreviewLaunch {
+                            from,
+                            to,
+                            watch,
+                            width,
+                            height,
+                            minecraft,
+                            assets_jar,
+                            no_textures,
+                        },
+                    )?;
                 }
             }
         }
@@ -1409,9 +1459,25 @@ fn run() -> Result<()> {
             watch,
             width,
             height,
+            minecraft,
+            assets_jar,
+            no_textures,
         } => {
             let s = open_session(&cwd, cli.session.as_deref())?;
-            run_preview_cmd(&cwd, &s, from, to, watch, width, height)?;
+            run_preview_cmd(
+                &cwd,
+                &s,
+                PreviewLaunch {
+                    from,
+                    to,
+                    watch,
+                    width,
+                    height,
+                    minecraft,
+                    assets_jar,
+                    no_textures,
+                },
+            )?;
         }
         Commands::Commit { dry_run } => {
             let mut s = open_session(&cwd, cli.session.as_deref())?;
@@ -1436,26 +1502,29 @@ fn open_session(cwd: &std::path::Path, session: Option<&str>) -> Result<Session>
     }
 }
 
-fn run_preview_cmd(
-    cwd: &std::path::Path,
-    session: &Session,
+struct PreviewLaunch {
     from: Option<String>,
     to: Option<String>,
     watch: u64,
     width: u32,
     height: u32,
-) -> Result<()> {
+    minecraft: Option<PathBuf>,
+    assets_jar: Option<PathBuf>,
+    no_textures: bool,
+}
+
+fn run_preview_cmd(cwd: &std::path::Path, session: &Session, launch: PreviewLaunch) -> Result<()> {
     #[cfg(not(feature = "preview"))]
     {
-        let _ = (cwd, session, from, to, watch, width, height);
+        let _ = (cwd, session, launch);
         bail!(
             "preview feature disabled; rebuild with `--features preview` (default on release builds)"
         );
     }
     #[cfg(feature = "preview")]
     {
-        let pinned_from = from.as_deref().map(parse_xyz_i).transpose()?;
-        let pinned_to = to.as_deref().map(parse_xyz_i).transpose()?;
+        let pinned_from = launch.from.as_deref().map(parse_xyz_i).transpose()?;
+        let pinned_to = launch.to.as_deref().map(parse_xyz_i).transpose()?;
         if pinned_from.is_some() != pinned_to.is_some() {
             bail!("preview needs both --from and --to, or neither (auto AABB)");
         }
@@ -1463,8 +1532,13 @@ fn run_preview_cmd(
             (Some(f), Some(t)) => (f, t),
             _ => suggest_preview_aabb(session)?,
         };
+        let (_atlas_probe, textures_label) = mcaedit_core::view::resolve_atlas_cli(
+            launch.minecraft.as_deref(),
+            launch.assets_jar.as_deref(),
+            launch.no_textures,
+        );
         println!(
-            "preview session={} aabb=({},{},{})..({},{},{}) watch={}ms (needs DISPLAY/Wayland)",
+            "preview session={} aabb=({},{},{})..({},{},{}) watch={}ms textures={} (needs DISPLAY/Wayland)",
             session.meta.id,
             show_from.0,
             show_from.1,
@@ -1472,16 +1546,20 @@ fn run_preview_cmd(
             show_to.0,
             show_to.1,
             show_to.2,
-            watch
+            launch.watch,
+            textures_label
         );
         preview::run_preview(preview::PreviewOptions {
             session_id: session.meta.id.clone(),
             cwd: cwd.to_path_buf(),
             from: pinned_from,
             to: pinned_to,
-            watch_ms: watch,
-            width,
-            height,
+            watch_ms: launch.watch,
+            width: launch.width,
+            height: launch.height,
+            minecraft: launch.minecraft,
+            assets_jar: launch.assets_jar,
+            no_textures: launch.no_textures,
         })?;
         Ok(())
     }

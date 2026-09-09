@@ -49,8 +49,12 @@ mcaedit edit brush biome --at 0,70,0 --radius 8 --biome minecraft:desert
 mcaedit edit smooth3d --from 0,60,0 --to 15,80,15 --iterations 2 --kernel 1
 mcaedit edit tick --from 0,0 --to 0,0 --rounds 20 --speed 3
 mcaedit view screenshot --from 0,64,0 --to 7,66,7 --out /tmp/shot.png --width 640 --height 360
+# 使用本机 Minecraft 26.2 client jar 方块贴图（可省略，自动探测）
+mcaedit view screenshot --from 0,64,0 --to 7,66,7 --out /tmp/shot.png \
+  --minecraft ~/.minecraft/versions/26.2/26.2.jar
 # 另开终端：实时建造预览窗口（需 DISPLAY/Wayland）
 mcaedit view preview --from 0,64,0 --to 15,80,15 --watch 400
+# 或：mcaedit preview --watch 500 --assets-jar /path/to/26.2.jar
 mcaedit history list
 mcaedit commit --dry-run
 mcaedit commit
@@ -73,8 +77,8 @@ mcaedit commit
 | **地形生成** | `edit gen --seed N --dim overworld\|nether\|end --from cx,cz --to cx,cz` |
 | **修光照** | `edit fix-light --from cx,cz --to cx,cz [--seed] [--dim]` |
 | **离线 tick** | `edit tick --from cx,cz --to cx,cz --rounds N --speed N`（别名 `tick-participate`） |
-| **离线截图** | `view screenshot --from x,y,z --to x,y,z [--out] [--width] [--height] [--camera] [--look]` |
-| **实时预览** | `view preview` / `preview`（`--from/--to` 可选，`--watch` 轮询 ms；需显示器） |
+| **离线截图** | `view screenshot --from x,y,z --to x,y,z [--out] [--width] [--height] [--camera] [--look] [--minecraft\|--assets-jar] [--no-textures]` |
+| **实时预览** | `view preview` / `preview`（`--from/--to` 可选，`--watch` 轮询 ms；`--minecraft` / `--assets-jar`；需显示器） |
 | 模板 | `template save\|list\|show\|paste\|rm\|export-schem\|import-schem` |
 | **`.schem`** | `schem export\|import\|info`（Sponge v2 写出；读 v2/v3） |
 | 撤销 / 重做 / 回退 | `history undo\|redo\|revert\|list` |
@@ -111,7 +115,18 @@ mcaedit edit tick --from 0,0 --to 3,3 --rounds 40 --speed 3
 # 实时建造预览（另开终端；需 DISPLAY 或 Wayland；与 edit 并行看进度）
 mcaedit view preview --from 0,64,0 --to 31,80,31 --watch 400
 # 或：mcaedit preview --watch 500
+
+# Minecraft 26.2 方块贴图（client jar）；缺 jar 时自动回退调色板实色，不崩溃
+export MCAEDIT_MINECRAFT_JAR=~/.minecraft/versions/26.2/26.2.jar
+# 或：export MCAEDIT_ASSETS_JAR=...
+mcaedit view screenshot --from 0,64,0 --to 15,80,15 --out /tmp/shot.png --minecraft ~/.minecraft/versions/26.2
+mcaedit view preview --assets-jar ~/.minecraft/versions/26.2/26.2.jar
+# 强制纯色：--no-textures
 ```
+
+自动探测路径（版本默认 **26.2**）：`~/.minecraft/versions/26.2/26.2.jar`、Flatpak Mojang、Prism/PolyMC/MultiMC instances、`%APPDATA%/.minecraft/...`、HMCL 等。`--minecraft` 可指向 jar 或 `versions/26.2/` 目录。
+
+v1 限制：立方体贴图 + face-cull，**无完整 block model**（台阶/栏杆/十字植物等仍按整方块或回退实色）；动画贴图只用首帧；光照为原版六面明暗阶梯（顶>南北>东西>底）× 全日空 lightmap，screenshot/preview 共用，无邻域 AO。
 
 ## Linear region
 
@@ -142,5 +157,7 @@ curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/ins
 - 完整服务端 random-tick（光照/湿度/邻居更新/蜜蜂授粉等）；离线 tick 覆盖作物 age、甘蔗/仙人掌/竹子向上长、草/菌丝扩散、farmland 湿度递减，以及 scheduled tick 队列步进（到期条目移除，不执行完整方块行为）
 - 生物群系分辨率低于 4×4×4（MCA section biomes 固有限制）
 - Linear：支持读/写 v1 与 v2；工作副本仍以 Anvil 编辑
+- view 贴图：依赖本机 Minecraft client jar；无 jar 时调色板实色；非完整 blockstate 模型
+- view 光照：MC 六面 shade + lightmap 曲线；无 smooth AO / 方块光传播
 
 https://github.com/CntierTeam/MCAEdit

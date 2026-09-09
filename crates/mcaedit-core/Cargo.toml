@@ -18,6 +18,7 @@ indexmap.workspace = true
 bytes.workspace = true
 glam.workspace = true
 image.workspace = true
+zip.workspace = true
 zstd.workspace = true
 xxhash-rust.workspace = true
 ruzstd.workspace = true

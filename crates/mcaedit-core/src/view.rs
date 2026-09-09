@@ -1,3 +1,6 @@
+use crate::assets::{
+    needs_biome_tint, BlockTextureAtlas, CubeFace, DEFAULT_MC_VERSION,
+};
 use crate::blockstate::BlockState;
 use crate::error::{Error, Result};
 use crate::region::{parse_region_name, RegionStore};
@@ -5,6 +8,7 @@ use crate::session::Session;
 use crate::world::WorldView;
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use image::{Rgba, RgbaImage};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -20,6 +24,12 @@ pub struct ViewScreenshotRequest {
     pub camera: Option<(f32, f32, f32)>,
     pub look: Option<(f32, f32, f32)>,
     pub out: PathBuf,
+    /// Client jar or versions/<ver> directory (`--minecraft`).
+    pub minecraft: Option<PathBuf>,
+    /// Explicit assets jar (`--assets-jar`).
+    pub assets_jar: Option<PathBuf>,
+    /// When true, skip jar lookup (palette colors only).
+    pub no_textures: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -30,6 +40,8 @@ pub struct ViewScreenshotResult {
     pub blocks: usize,
     pub faces: usize,
     pub triangles: usize,
+    /// `"palette"` or absolute jar path used for textures.
+    pub textures: String,
 }
 
 /// Shared face-culled mesh used by screenshot and live preview.
@@ -40,6 +52,9 @@ pub struct ViewMesh {
     pub faces: usize,
     pub from: (i32, i32, i32),
     pub to: (i32, i32, i32),
+    /// Texture images; vertex `tex_id == 0` means solid `color` only.
+    /// Indices are 1-based into this vec (`textures[tex_id - 1]`).
+    pub textures: Vec<RgbaImage>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -54,6 +69,9 @@ pub struct ViewVertex {
     pub pos: Vec3,
     pub normal: Vec3,
     pub color: Vec3,
+    pub uv: Vec2,
+    /// 0 = solid color; else 1-based index into [`ViewMesh::textures`].
+    pub tex_id: u16,
 }
 
 /// RGBA8 frame buffer (row-major).
@@ -82,7 +100,9 @@ impl<'a> WorldView<'a> {
         if req.width < 64 || req.height < 64 {
             return Err(Error::msg("width/height must be >= 64"));
         }
-        let mesh = self.build_view_mesh(req.from, req.to)?;
+        let (mut atlas, textures_label) =
+            resolve_atlas_cli(req.minecraft.as_deref(), req.assets_jar.as_deref(), req.no_textures);
+        let mesh = self.build_view_mesh_with_textures(req.from, req.to, atlas.as_mut())?;
         let (look, camera) = default_camera_for_mesh(&mesh, req.look, req.camera);
         let frame = rasterize_view_mesh(&mesh, req.width, req.height, camera, look);
         if let Some(parent) = req.out.parent() {
@@ -98,6 +118,7 @@ impl<'a> WorldView<'a> {
             blocks: mesh.blocks,
             faces: mesh.faces,
             triangles: mesh.triangles.len(),
+            textures: textures_label,
         })
     }
 
@@ -106,6 +127,16 @@ impl<'a> WorldView<'a> {
         &self,
         from: (i32, i32, i32),
         to: (i32, i32, i32),
+    ) -> Result<ViewMesh> {
+        self.build_view_mesh_with_textures(from, to, None)
+    }
+
+    /// Like [`Self::build_view_mesh`], optionally sampling Minecraft block textures.
+    pub fn build_view_mesh_with_textures(
+        &self,
+        from: (i32, i32, i32),
+        to: (i32, i32, i32),
+        mut atlas: Option<&mut BlockTextureAtlas>,
     ) -> Result<ViewMesh> {
         let (min_x, max_x) = (from.0.min(to.0), from.0.max(to.0));
         let (min_y, max_y) = (from.1.min(to.1), from.1.max(to.1));
@@ -124,7 +155,10 @@ impl<'a> WorldView<'a> {
             faces: 0,
             from: (min_x, min_y, min_z),
             to: (max_x, max_y, max_z),
+            textures: Vec::new(),
         };
+        let mut tex_keys: HashMap<String, u16> = HashMap::new();
+
         for y in min_y..=max_y {
             for z in min_z..=max_z {
                 for x in min_x..=max_x {
@@ -133,8 +167,15 @@ impl<'a> WorldView<'a> {
                         continue;
                     }
                     mesh.blocks += 1;
-                    let color = color_for_block(&b);
-                    for face in cube_faces(x as f32, y as f32, z as f32, color) {
+                    let palette = color_for_block(&b);
+                    let tint = if needs_biome_tint(&b.name) {
+                        palette
+                    } else {
+                        Vec3::ONE
+                    };
+                    for (face_kind, mut face) in
+                        cube_faces(x as f32, y as f32, z as f32, palette)
+                    {
                         let nx = x + face.normal.x as i32;
                         let ny = y + face.normal.y as i32;
                         let nz = z + face.normal.z as i32;
@@ -149,25 +190,111 @@ impl<'a> WorldView<'a> {
                         } else {
                             self.get_block(nx, ny, nz)?.is_air_like()
                         };
-                        if neighbor_is_air {
-                            mesh.faces += 1;
-                            mesh.triangles.push(ViewTriangle {
-                                a: face.v0,
-                                b: face.v1,
-                                c: face.v2,
-                            });
-                            mesh.triangles.push(ViewTriangle {
-                                a: face.v0,
-                                b: face.v2,
-                                c: face.v3,
-                            });
+                        if !neighbor_is_air {
+                            continue;
                         }
+                        let tex_id = match atlas.as_mut() {
+                            Some(a) => ensure_face_texture(
+                                a,
+                                &mut mesh.textures,
+                                &mut tex_keys,
+                                &b.name,
+                                face_kind,
+                            ),
+                            None => 0,
+                        };
+                        // Textured: vertex color is tint (ONE or grass/leaves). Solid: palette.
+                        let vert_color = if tex_id > 0 { tint } else { palette };
+                        mesh.faces += 1;
+                        for v in [&mut face.v0, &mut face.v1, &mut face.v2, &mut face.v3] {
+                            v.tex_id = tex_id;
+                            v.color = vert_color;
+                        }
+                        mesh.triangles.push(ViewTriangle {
+                            a: face.v0,
+                            b: face.v1,
+                            c: face.v2,
+                        });
+                        mesh.triangles.push(ViewTriangle {
+                            a: face.v0,
+                            b: face.v2,
+                            c: face.v3,
+                        });
                     }
                 }
             }
         }
         Ok(mesh)
     }
+}
+
+/// Open atlas from an explicit jar path, or auto-detect Minecraft 26.2.
+/// Never panics: missing/invalid jar → `(None, "palette")`.
+pub fn resolve_atlas_for_view(
+    explicit: Option<&Path>,
+    no_textures: bool,
+) -> (Option<BlockTextureAtlas>, String) {
+    if no_textures {
+        return (None, "palette".into());
+    }
+    if let Some(p) = explicit {
+        return match BlockTextureAtlas::open(p) {
+            Ok(a) => {
+                let label = a.path().display().to_string();
+                (Some(a), label)
+            }
+            Err(_) => (None, "palette".into()),
+        };
+    }
+    match BlockTextureAtlas::discover(DEFAULT_MC_VERSION) {
+        Some(a) => {
+            let label = a.path().display().to_string();
+            (Some(a), label)
+        }
+        None => (None, "palette".into()),
+    }
+}
+
+/// Resolve using `--minecraft` / `--assets-jar` / env / auto-detect.
+pub fn resolve_atlas_cli(
+    minecraft: Option<&Path>,
+    assets_jar: Option<&Path>,
+    no_textures: bool,
+) -> (Option<BlockTextureAtlas>, String) {
+    if no_textures {
+        return (None, "palette".into());
+    }
+    match BlockTextureAtlas::resolve(minecraft, assets_jar, DEFAULT_MC_VERSION) {
+        Some(a) => {
+            let label = a.path().display().to_string();
+            (Some(a), label)
+        }
+        None => (None, "palette".into()),
+    }
+}
+
+fn ensure_face_texture(
+    atlas: &mut BlockTextureAtlas,
+    textures: &mut Vec<RgbaImage>,
+    keys: &mut HashMap<String, u16>,
+    block_name: &str,
+    face: CubeFace,
+) -> u16 {
+    let key = format!("{block_name}|{face:?}");
+    if let Some(id) = keys.get(&key) {
+        return *id;
+    }
+    let Some(img) = atlas.image_for_block_face(block_name, face) else {
+        keys.insert(key, 0);
+        return 0;
+    };
+    if textures.len() >= u16::MAX as usize - 1 {
+        return 0;
+    }
+    textures.push(img);
+    let id = textures.len() as u16; // 1-based
+    keys.insert(key, id);
+    id
 }
 
 /// Soft-rasterize a mesh (same lighting/cull pipeline as screenshot).
@@ -180,22 +307,21 @@ pub fn rasterize_view_mesh(
 ) -> RgbaFrame {
     let mut img = RgbaImage::from_pixel(width, height, Rgba(SKY));
     let mut zbuf = vec![f32::INFINITY; (width * height) as usize];
-    let light_dir = Vec3::new(0.45, 1.0, 0.35).normalize();
     let view = Mat4::look_at_rh(camera, look, Vec3::Y);
     let proj = Mat4::perspective_rh(60.0f32.to_radians(), width as f32 / height as f32, 0.1, 8192.0);
     let vp = proj * view;
 
     for tri in &mesh.triangles {
-        let Some(a) = project(tri.a, vp, width as f32, height as f32, light_dir) else {
+        let Some(a) = project(tri.a, vp, width as f32, height as f32) else {
             continue;
         };
-        let Some(b) = project(tri.b, vp, width as f32, height as f32, light_dir) else {
+        let Some(b) = project(tri.b, vp, width as f32, height as f32) else {
             continue;
         };
-        let Some(c) = project(tri.c, vp, width as f32, height as f32, light_dir) else {
+        let Some(c) = project(tri.c, vp, width as f32, height as f32) else {
             continue;
         };
-        draw_triangle(&mut img, &mut zbuf, a, b, c);
+        draw_triangle(&mut img, &mut zbuf, a, b, c, &mesh.textures);
     }
 
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
@@ -207,6 +333,46 @@ pub fn rasterize_view_mesh(
         height,
         pixels,
     }
+}
+
+/// Minecraft `Direction.getShade` face multipliers (flat face shading).
+///
+/// Classic ladder: **top 1.0**, **N/S 0.8**, **E/W 0.6**, **bottom 0.5**.
+/// Used by both screenshot and live preview soft-raster (no Lambert).
+pub fn mc_face_shade(normal: Vec3) -> f32 {
+    let n = normal.normalize_or_zero();
+    let ax = n.x.abs();
+    let ay = n.y.abs();
+    let az = n.z.abs();
+    if ay >= ax && ay >= az {
+        if n.y >= 0.0 {
+            1.0
+        } else {
+            0.5
+        }
+    } else if az >= ax {
+        0.8
+    } else {
+        0.6
+    }
+}
+
+/// Approximate Minecraft lightmap brightness for sky/block levels `0..=15`.
+///
+/// Matches the long-standing CPU curve used before GPU lightmap textures:
+/// `(1 - x^4) * (1 - ambient) + ambient` with `x = 1 - level/15`.
+/// Offline view assumes outdoor daytime → callers usually pass sky=15, block=0.
+pub fn mc_lightmap_brightness(sky: u8, block: u8) -> f32 {
+    let level = sky.max(block).min(15);
+    let ambient = 0.04_f32;
+    let x = 1.0 - (level as f32) / 15.0;
+    let shaped = 1.0 - x * x * x * x;
+    (shaped * (1.0 - ambient) + ambient).clamp(0.0, 1.0)
+}
+
+/// Combined MC shade for a face under full outdoor skylight (preview/screenshot default).
+pub fn mc_vertex_shade(normal: Vec3) -> f32 {
+    (mc_face_shade(normal) * mc_lightmap_brightness(15, 0)).clamp(0.0, 1.0)
 }
 
 pub fn default_camera_for_mesh(
@@ -422,9 +588,11 @@ struct ScreenVertex {
     z: f32,
     shade: f32,
     color: Vec3,
+    uv: Vec2,
+    tex_id: u16,
 }
 
-fn cube_faces(x: f32, y: f32, z: f32, color: Vec3) -> [Face; 6] {
+fn cube_faces(x: f32, y: f32, z: f32, color: Vec3) -> [(CubeFace, Face); 6] {
     let p000 = Vec3::new(x, y, z);
     let p001 = Vec3::new(x, y, z + 1.0);
     let p010 = Vec3::new(x, y + 1.0, z);
@@ -433,50 +601,89 @@ fn cube_faces(x: f32, y: f32, z: f32, color: Vec3) -> [Face; 6] {
     let p101 = Vec3::new(x + 1.0, y, z + 1.0);
     let p110 = Vec3::new(x + 1.0, y + 1.0, z);
     let p111 = Vec3::new(x + 1.0, y + 1.0, z + 1.0);
+    let uvs = uv_quad();
 
     [
-        make_face(Vec3::new(-1.0, 0.0, 0.0), p000, p010, p011, p001, color),
-        make_face(Vec3::new(1.0, 0.0, 0.0), p100, p101, p111, p110, color),
-        make_face(Vec3::new(0.0, -1.0, 0.0), p000, p001, p101, p100, color),
-        make_face(Vec3::new(0.0, 1.0, 0.0), p010, p110, p111, p011, color),
-        make_face(Vec3::new(0.0, 0.0, -1.0), p000, p100, p110, p010, color),
-        make_face(Vec3::new(0.0, 0.0, 1.0), p001, p011, p111, p101, color),
+        (
+            CubeFace::NegX,
+            make_face(Vec3::new(-1.0, 0.0, 0.0), p000, p010, p011, p001, color, uvs),
+        ),
+        (
+            CubeFace::PosX,
+            make_face(Vec3::new(1.0, 0.0, 0.0), p100, p101, p111, p110, color, uvs),
+        ),
+        (
+            CubeFace::NegY,
+            make_face(Vec3::new(0.0, -1.0, 0.0), p000, p001, p101, p100, color, uvs),
+        ),
+        (
+            CubeFace::PosY,
+            make_face(Vec3::new(0.0, 1.0, 0.0), p010, p110, p111, p011, color, uvs),
+        ),
+        (
+            CubeFace::NegZ,
+            make_face(Vec3::new(0.0, 0.0, -1.0), p000, p100, p110, p010, color, uvs),
+        ),
+        (
+            CubeFace::PosZ,
+            make_face(Vec3::new(0.0, 0.0, 1.0), p001, p011, p111, p101, color, uvs),
+        ),
     ]
 }
 
-fn make_face(normal: Vec3, a: Vec3, b: Vec3, c: Vec3, d: Vec3, color: Vec3) -> Face {
+fn uv_quad() -> [Vec2; 4] {
+    // v=0 at top of PNG (Minecraft convention).
+    [
+        Vec2::new(0.0, 0.0),
+        Vec2::new(0.0, 1.0),
+        Vec2::new(1.0, 1.0),
+        Vec2::new(1.0, 0.0),
+    ]
+}
+
+fn make_face(
+    normal: Vec3,
+    a: Vec3,
+    b: Vec3,
+    c: Vec3,
+    d: Vec3,
+    color: Vec3,
+    uvs: [Vec2; 4],
+) -> Face {
     Face {
         normal,
         v0: ViewVertex {
             pos: a,
             normal,
             color,
+            uv: uvs[0],
+            tex_id: 0,
         },
         v1: ViewVertex {
             pos: b,
             normal,
             color,
+            uv: uvs[1],
+            tex_id: 0,
         },
         v2: ViewVertex {
             pos: c,
             normal,
             color,
+            uv: uvs[2],
+            tex_id: 0,
         },
         v3: ViewVertex {
             pos: d,
             normal,
             color,
+            uv: uvs[3],
+            tex_id: 0,
         },
     }
 }
 
-fn project(
-    v: ViewVertex,
-    vp: Mat4,
-    width: f32,
-    height: f32,
-    light_dir: Vec3,
-) -> Option<ScreenVertex> {
+fn project(v: ViewVertex, vp: Mat4, width: f32, height: f32) -> Option<ScreenVertex> {
     let p = vp * Vec4::new(v.pos.x, v.pos.y, v.pos.z, 1.0);
     if p.w <= 0.0 {
         return None;
@@ -487,13 +694,16 @@ fn project(
     }
     let sx = (ndc.x * 0.5 + 0.5) * (width - 1.0);
     let sy = (1.0 - (ndc.y * 0.5 + 0.5)) * (height - 1.0);
-    let shade = (0.28 + 0.72 * v.normal.normalize().dot(light_dir).max(0.0)).clamp(0.0, 1.0);
+    // Minecraft flat face shading (not Lambert).
+    let shade = mc_vertex_shade(v.normal);
     Some(ScreenVertex {
         x: sx,
         y: sy,
         z: ndc.z,
         shade,
         color: v.color,
+        uv: v.uv,
+        tex_id: v.tex_id,
     })
 }
 
@@ -503,6 +713,7 @@ fn draw_triangle(
     a: ScreenVertex,
     b: ScreenVertex,
     c: ScreenVertex,
+    textures: &[RgbaImage],
 ) {
     let p0 = Vec2::new(a.x, a.y);
     let p1 = Vec2::new(b.x, b.y);
@@ -519,6 +730,12 @@ fn draw_triangle(
         return;
     }
 
+    let tex = if a.tex_id > 0 {
+        textures.get((a.tex_id as usize) - 1)
+    } else {
+        None
+    };
+
     for y in min_y..=max_y {
         for x in min_x..=max_x {
             let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
@@ -533,9 +750,23 @@ fn draw_triangle(
             if z >= zbuf[idx] {
                 continue;
             }
+
+            let shade = w0 * a.shade + w1 * b.shade + w2 * c.shade;
+            let vert_color =
+                (w0 * a.color + w1 * b.color + w2 * c.color).clamp(Vec3::ZERO, Vec3::ONE);
+            let (rgb, alpha) = if let Some(tex) = tex {
+                let uv = w0 * a.uv + w1 * b.uv + w2 * c.uv;
+                let (sample, a8) = sample_nearest(tex, uv.x, uv.y);
+                if a8 < 16 {
+                    continue; // cutout / glass holes
+                }
+                // Vertex color is tint (usually ONE; grass/leaves multiply).
+                ((sample * vert_color) * shade, a8)
+            } else {
+                (vert_color * shade, 255)
+            };
+            let col = rgb.clamp(Vec3::ZERO, Vec3::ONE);
             zbuf[idx] = z;
-            let col = (w0 * (a.color * a.shade) + w1 * (b.color * b.shade) + w2 * (c.color * c.shade))
-                .clamp(Vec3::ZERO, Vec3::ONE);
             img.put_pixel(
                 x,
                 y,
@@ -543,11 +774,27 @@ fn draw_triangle(
                     (col.x * 255.0) as u8,
                     (col.y * 255.0) as u8,
                     (col.z * 255.0) as u8,
-                    255,
+                    alpha,
                 ]),
             );
         }
     }
+}
+
+fn sample_nearest(tex: &RgbaImage, u: f32, v: f32) -> (Vec3, u8) {
+    let w = tex.width().max(1);
+    let h = tex.height().max(1);
+    let uf = u.fract();
+    let vf = v.fract();
+    let u_pos = if uf < 0.0 { uf + 1.0 } else { uf };
+    let v_pos = if vf < 0.0 { vf + 1.0 } else { vf };
+    let x = ((u_pos * w as f32) as u32).min(w - 1);
+    let y = ((v_pos * h as f32) as u32).min(h - 1);
+    let p = tex.get_pixel(x, y).0;
+    (
+        Vec3::new(p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0),
+        p[3],
+    )
 }
 
 fn edge(a: Vec2, b: Vec2, c: Vec2) -> f32 {
@@ -605,9 +852,114 @@ fn hash_color(name: &str) -> [u8; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::BlockTextureAtlas;
     use std::collections::HashSet;
     use std::fs;
     use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    #[test]
+    fn mc_face_shade_ladder_top_sides_bottom() {
+        let top = mc_face_shade(Vec3::Y);
+        let south = mc_face_shade(Vec3::Z);
+        let east = mc_face_shade(Vec3::X);
+        let bottom = mc_face_shade(-Vec3::Y);
+        assert!((top - 1.0).abs() < 1e-5);
+        assert!((south - 0.8).abs() < 1e-5);
+        assert!((east - 0.6).abs() < 1e-5);
+        assert!((bottom - 0.5).abs() < 1e-5);
+        assert!(top > south && south > east && east > bottom);
+        // Opposite cardinals share the same step.
+        assert!((mc_face_shade(-Vec3::Z) - south).abs() < 1e-5);
+        assert!((mc_face_shade(-Vec3::X) - east).abs() < 1e-5);
+    }
+
+    #[test]
+    fn mc_lightmap_full_sky_is_bright() {
+        assert!((mc_lightmap_brightness(15, 0) - 1.0).abs() < 1e-3);
+        assert!(mc_lightmap_brightness(15, 0) > mc_lightmap_brightness(8, 0));
+        assert!(mc_lightmap_brightness(8, 0) > mc_lightmap_brightness(0, 0));
+    }
+
+    #[test]
+    fn rasterized_faces_keep_mc_brightness_order() {
+        // White unit quads facing +Y / +Z / +X / -Y; sample mean luminance.
+        let white = Vec3::ONE;
+        let mk = |normal: Vec3, origin: Vec3| -> ViewTriangle {
+            // Small quad centered near origin, facing `normal`.
+            let t = if normal.y.abs() > 0.5 {
+                Vec3::X
+            } else {
+                Vec3::Y
+            };
+            let b = normal.cross(t).normalize();
+            let t = b.cross(normal).normalize();
+            let o = origin;
+            ViewTriangle {
+                a: ViewVertex {
+                    pos: o - t - b,
+                    normal,
+                    color: white,
+                    uv: Vec2::ZERO,
+                    tex_id: 0,
+                },
+                b: ViewVertex {
+                    pos: o - t + b,
+                    normal,
+                    color: white,
+                    uv: Vec2::ZERO,
+                    tex_id: 0,
+                },
+                c: ViewVertex {
+                    pos: o + t + b,
+                    normal,
+                    color: white,
+                    uv: Vec2::ZERO,
+                    tex_id: 0,
+                },
+            }
+        };
+        let mean_luma = |normal: Vec3| -> f32 {
+            let mesh = ViewMesh {
+                triangles: vec![mk(normal, Vec3::ZERO)],
+                blocks: 1,
+                faces: 1,
+                from: (-1, -1, -1),
+                to: (1, 1, 1),
+                textures: vec![],
+            };
+            // Offset camera so look_at up=Y is never parallel to view (top/bottom).
+            let cam = normal * 3.0 + Vec3::new(0.4, 0.0, 0.25);
+            let frame = rasterize_view_mesh(&mesh, 64, 64, cam, Vec3::ZERO);
+            let mut sum = 0.0f32;
+            let mut n = 0u32;
+            for i in (0..frame.pixels.len()).step_by(4) {
+                let r = frame.pixels[i] as f32;
+                let g = frame.pixels[i + 1] as f32;
+                let b = frame.pixels[i + 2] as f32;
+                // Skip sky pixels.
+                if (r - SKY[0] as f32).abs() < 1.0
+                    && (g - SKY[1] as f32).abs() < 1.0
+                    && (b - SKY[2] as f32).abs() < 1.0
+                {
+                    continue;
+                }
+                sum += 0.299 * r + 0.587 * g + 0.114 * b;
+                n += 1;
+            }
+            assert!(n > 20, "expected shaded face pixels, got {n}");
+            sum / n as f32
+        };
+        let top = mean_luma(Vec3::Y);
+        let south = mean_luma(Vec3::Z);
+        let east = mean_luma(Vec3::X);
+        let bottom = mean_luma(-Vec3::Y);
+        assert!(
+            top > south && south > east && east > bottom,
+            "luma order top={top} south={south} east={east} bottom={bottom}"
+        );
+    }
 
     #[test]
     fn hash_color_is_stable() {
@@ -696,6 +1048,97 @@ mod tests {
         let frame = rasterize_view_mesh(&mesh, 64, 64, Vec3::new(0.0, 10.0, 10.0), Vec3::ZERO);
         assert_eq!(frame.pixels.len(), 64 * 64 * 4);
         assert_eq!(&frame.pixels[0..4], &SKY);
+    }
+
+    #[test]
+    fn rasterize_textured_quad_samples_png() {
+        let mut tex = RgbaImage::new(2, 2);
+        for (x, y, p) in tex.enumerate_pixels_mut() {
+            *p = if x == 0 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 255, 0, 255])
+            };
+            let _ = y;
+        }
+        let color = Vec3::ONE;
+        let n = Vec3::new(0.0, 0.0, 1.0);
+        let mesh = ViewMesh {
+            triangles: vec![ViewTriangle {
+                a: ViewVertex {
+                    pos: Vec3::new(-1.0, -1.0, 0.0),
+                    normal: n,
+                    color,
+                    uv: Vec2::new(0.0, 1.0),
+                    tex_id: 1,
+                },
+                b: ViewVertex {
+                    pos: Vec3::new(1.0, -1.0, 0.0),
+                    normal: n,
+                    color,
+                    uv: Vec2::new(1.0, 1.0),
+                    tex_id: 1,
+                },
+                c: ViewVertex {
+                    pos: Vec3::new(-1.0, 1.0, 0.0),
+                    normal: n,
+                    color,
+                    uv: Vec2::new(0.0, 0.0),
+                    tex_id: 1,
+                },
+            }],
+            blocks: 1,
+            faces: 1,
+            from: (-1, -1, 0),
+            to: (1, 1, 0),
+            textures: vec![tex],
+        };
+        let frame = rasterize_view_mesh(
+            &mesh,
+            64,
+            64,
+            Vec3::new(0.0, 0.0, 3.0),
+            Vec3::ZERO,
+        );
+        // Center pixel should not be sky after raster.
+        let i = ((32 * 64 + 32) * 4) as usize;
+        assert_ne!(&frame.pixels[i..i + 3], &SKY[0..3]);
+    }
+
+    #[test]
+    fn atlas_missing_falls_back_to_palette_label() {
+        let (atlas, label) = resolve_atlas_for_view(Some(Path::new("/nope/missing.jar")), false);
+        // resolve tries explicit then auto-detect — may still find a real jar on developer machines.
+        if atlas.is_none() {
+            assert_eq!(label, "palette");
+        }
+    }
+
+    #[test]
+    fn fixture_jar_packs_into_mesh_textures() {
+        let dir = tempfile::tempdir().unwrap();
+        let jar = dir.path().join("t.jar");
+        {
+            let mut img = RgbaImage::new(2, 2);
+            for p in img.pixels_mut() {
+                *p = Rgba([0xAA, 0xAA, 0xAA, 0xFF]);
+            }
+            let png = dir.path().join("stone.png");
+            img.save(&png).unwrap();
+            let file = fs::File::create(&jar).unwrap();
+            let mut zip = ZipWriter::new(file);
+            let opts =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("assets/minecraft/textures/block/stone.png", opts)
+                .unwrap();
+            zip.write_all(&fs::read(&png).unwrap()).unwrap();
+            zip.finish().unwrap();
+        }
+        let mut atlas = BlockTextureAtlas::open(&jar).unwrap();
+        let img = atlas
+            .image_for_block_face("minecraft:stone", CubeFace::PosY)
+            .unwrap();
+        assert_eq!(img.get_pixel(0, 0).0[0], 0xAA);
     }
 
     fn visible_faces(occ: &HashSet<(i32, i32, i32)>) -> usize {

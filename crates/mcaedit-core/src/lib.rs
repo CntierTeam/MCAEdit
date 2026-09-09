@@ -1,5 +1,6 @@
 //! Offline MCA editor: session + history + commit.
 
+pub mod assets;
 pub mod action;
 pub mod bitstorage;
 pub mod blockstate;

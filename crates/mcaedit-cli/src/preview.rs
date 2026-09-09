@@ -5,10 +5,11 @@ use anyhow::{Context, Result};
 use anyhow::bail;
 use eframe::egui;
 use glam::Vec3;
+use mcaedit_core::assets::BlockTextureAtlas;
 use mcaedit_core::session::Session;
 use mcaedit_core::view::{
     default_camera_for_mesh, orbit_camera, preview_watch_token, rasterize_view_mesh,
-    suggest_preview_aabb, PreviewWatchToken, RgbaFrame, ViewMesh,
+    resolve_atlas_cli, suggest_preview_aabb, PreviewWatchToken, RgbaFrame, ViewMesh,
 };
 use mcaedit_core::world::WorldView;
 use std::path::PathBuf;
@@ -23,6 +24,9 @@ pub struct PreviewOptions {
     pub watch_ms: u64,
     pub width: u32,
     pub height: u32,
+    pub minecraft: Option<PathBuf>,
+    pub assets_jar: Option<PathBuf>,
+    pub no_textures: bool,
 }
 
 pub fn run_preview(opts: PreviewOptions) -> Result<()> {
@@ -82,6 +86,8 @@ struct PreviewApp {
     from: (i32, i32, i32),
     to: (i32, i32, i32),
     mesh: ViewMesh,
+    atlas: Option<BlockTextureAtlas>,
+    textures_label: String,
     token: PreviewWatchToken,
     last_reload: Instant,
     last_reload_unix: u64,
@@ -107,9 +113,15 @@ impl PreviewApp {
     ) -> Result<Self> {
         let session_root = session.root.clone();
         let token = preview_watch_token(&session_root)?;
+        let (atlas, textures_label) = resolve_atlas_cli(
+            opts.minecraft.as_deref(),
+            opts.assets_jar.as_deref(),
+            opts.no_textures,
+        );
+        let mut atlas = atlas;
         let world = WorldView::new(&mut session);
         let mesh = world
-            .build_view_mesh(from, to)
+            .build_view_mesh_with_textures(from, to, atlas.as_mut())
             .context("initial mesh build")?;
         let (look, _cam) = default_camera_for_mesh(&mesh, None, None);
         let span = {
@@ -124,6 +136,8 @@ impl PreviewApp {
             from,
             to,
             mesh,
+            atlas,
+            textures_label,
             token,
             last_reload: Instant::now(),
             last_reload_unix: now_unix(),
@@ -178,7 +192,7 @@ impl PreviewApp {
             self.to = t;
         }
         let world = WorldView::new(&mut session);
-        self.mesh = world.build_view_mesh(self.from, self.to)?;
+        self.mesh = world.build_view_mesh_with_textures(self.from, self.to, self.atlas.as_mut())?;
         let (look, _) = default_camera_for_mesh(&self.mesh, None, None);
         self.look = look;
         Ok(())
@@ -225,10 +239,15 @@ impl eframe::App for PreviewApp {
                 ));
                 ui.separator();
                 ui.label(format!(
-                    "blocks={} faces={} tris={}",
+                    "blocks={} faces={} tris={} tex={}",
                     self.mesh.blocks,
                     self.mesh.faces,
-                    self.mesh.triangles.len()
+                    self.mesh.triangles.len(),
+                    if self.textures_label == "palette" {
+                        "palette"
+                    } else {
+                        "jar"
+                    }
                 ));
                 ui.separator();
                 ui.label(format!(
@@ -340,6 +359,9 @@ mod tests {
             watch_ms: 400,
             width: 960,
             height: 540,
+            minecraft: None,
+            assets_jar: None,
+            no_textures: false,
         };
         assert_eq!(opts.watch_ms, 400);
         assert!(opts.from.is_none());
