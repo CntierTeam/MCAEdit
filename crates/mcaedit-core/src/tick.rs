@@ -250,7 +250,7 @@ fn grow_at(
 
     if let Some(max_age) = age_max(&before.name) {
         let age = prop_u8(before, "age").unwrap_or(0);
-        if age < max_age && (fastrand_u32() % 2) == 0 {
+        if age < max_age && fastrand_u32().is_multiple_of(2) {
             let mut after = before.clone();
             after
                 .properties
@@ -282,7 +282,7 @@ fn grow_at(
                 h += 1;
                 yy -= 1;
             }
-            if h >= 3 || (fastrand_u32() % 3) != 0 {
+            if h >= 3 || !fastrand_u32().is_multiple_of(3) {
                 return Ok(None);
             }
             let place = BlockState::parse(&format!("minecraft:{name}")).unwrap();
@@ -296,7 +296,7 @@ fn grow_at(
         }
         "bamboo_sapling" => {
             let above = peek(world, dirty, changes, x, y + 1, z)?;
-            if above.is_air_like() && (fastrand_u32() % 3) == 0 {
+            if above.is_air_like() && fastrand_u32().is_multiple_of(3) {
                 return Ok(Some(vec![
                     BlockChange {
                         x,
@@ -322,7 +322,7 @@ fn grow_at(
             let tx = x + dx;
             let tz = z + dz;
             let target = peek(world, dirty, changes, tx, y, tz)?;
-            if strip_ns(&target.name) == "dirt" && (fastrand_u32() % 3) == 0 {
+            if strip_ns(&target.name) == "dirt" && fastrand_u32().is_multiple_of(3) {
                 let ck = (tx >> 4, tz >> 4);
                 if let std::collections::btree_map::Entry::Vacant(e) = dirty.entry(ck) {
                     e.insert(world.load_chunk(ck.0, ck.1)?);
@@ -339,7 +339,7 @@ fn grow_at(
         }
         "farmland" => {
             let moisture = prop_u8(before, "moisture").unwrap_or(0);
-            if moisture > 0 && (fastrand_u32() % 4) == 0 {
+            if moisture > 0 && fastrand_u32().is_multiple_of(4) {
                 let mut after = before.clone();
                 after
                     .properties

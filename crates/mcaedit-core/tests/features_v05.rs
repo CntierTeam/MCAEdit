@@ -225,7 +225,7 @@ fn linear_v1_session_open_edit_commit() {
         // Seed a Linear v1 region containing one edited chunk via MCA→Linear.
         {
             let mut session_seed =
-                Session::create(&tmp.path(), &world, "overworld", Some("seed".into()), None)
+                Session::create(tmp.path(), &world, "overworld", Some("seed".into()), None)
                     .unwrap();
             let mut wv = WorldView::new(&mut session_seed);
             wv.set_block(5, 70, 5, BlockState::parse("minecraft:gold_block").unwrap())
