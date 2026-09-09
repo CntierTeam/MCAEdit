@@ -9,6 +9,7 @@ pub mod commit;
 pub mod entity;
 pub mod error;
 pub mod history;
+pub mod linear;
 pub mod mask;
 pub mod ops;
 pub mod palette;
@@ -18,6 +19,7 @@ pub mod schem;
 pub mod session;
 pub mod template;
 pub mod terrain_bridge;
+pub mod tick;
 pub mod view;
 pub mod world;
 

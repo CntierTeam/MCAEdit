@@ -7,7 +7,7 @@ members = [
 exclude = ["vendor/pumpkin"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "GPL-3.0"
 authors = ["CntierTeam"]
@@ -29,6 +29,9 @@ bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 glam = "0.30"
 image = { version = "0.25", default-features = false, features = ["png"] }
+zstd = "0.14"
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+ruzstd = { version = "0.9.0", default-features = false, features = ["std"] }
 # Path into submodule; ensure-vendor.sh patches package.workspace so nested inherit works.
 pumpkin-world = { path = "vendor/pumpkin/crates/pumpkin-world" }
 pumpkin-util = { path = "vendor/pumpkin/crates/pumpkin-util" }

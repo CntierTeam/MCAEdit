@@ -189,7 +189,30 @@ impl Session {
                 let Some(name) = name.to_str() else {
                     continue;
                 };
-                if name.ends_with(".mca") {
+                if name.ends_with(".mca") || name.ends_with(".linear") {
+                    // Linear sources are converted lazily via copy_region_if_needed;
+                    // still seed work copy so list/sync reports files.
+                    if name.ends_with(".linear") {
+                        // Convert immediately so work tree is Anvil-editable.
+                        let bytes = fs::read(entry.path())?;
+                        if crate::linear::is_linear_file(&bytes) {
+                            let mut linear = crate::linear::read_linear(&bytes)?;
+                            let (rx, rz) = crate::region::parse_region_name(name)?;
+                            linear.region_x = rx;
+                            linear.region_z = rz;
+                            let mca = crate::linear::linear_to_mca_bytes(&linear)?;
+                            let mca_name = crate::region::region_file_name(rx, rz);
+                            crate::region::atomic_write(&work.join(&mca_name), &mca)?;
+                            crate::region::write_linear_source_marker(
+                                &work,
+                                rx,
+                                rz,
+                                linear.version,
+                            )?;
+                            n += 1;
+                            continue;
+                        }
+                    }
                     fs::copy(entry.path(), work.join(name))?;
                     n += 1;
                 }

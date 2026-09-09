@@ -357,7 +357,7 @@ enum EditCmd {
         #[arg(long)]
         axis: String,
     },
-    /// Brush apply at a point (sphere / cyl / clipboard)
+    /// Brush apply at a point (sphere / cyl / clipboard / biome)
     Brush {
         #[command(subcommand)]
         cmd: BrushCmd,
@@ -373,6 +373,21 @@ enum EditCmd {
         /// Neighbor kernel radius (Chebyshev), default 1
         #[arg(long, default_value_t = 1)]
         kernel: i32,
+    },
+    /// 3D voxel neighbourhood smooth (majority vote) over AABB
+    Smooth3d {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long, default_value_t = 1)]
+        iterations: u32,
+        /// Neighbor kernel radius (Chebyshev), default 1
+        #[arg(long, default_value_t = 1)]
+        kernel: i32,
+        /// Vote air vs solid first; solid winners use majority solid neighbour
+        #[arg(long, default_value_t = false)]
+        solid: bool,
     },
     /// Paint biomes in AABB (4×4×4 resolution per section)
     Biome {
@@ -405,8 +420,9 @@ enum EditCmd {
         #[arg(long, default_value = "overworld")]
         dim: String,
     },
-    /// Rebuild random-tick masks + step scheduled ticks (offline participate)
-    TickParticipate {
+    /// Offline tick: scheduled queues + approximate random-tick growth
+    #[command(name = "tick", alias = "tick-participate")]
+    Tick {
         #[arg(long, help = "chunk x,z")]
         from: String,
         #[arg(long, help = "chunk x,z")]
@@ -483,6 +499,41 @@ enum BrushCmd {
         mask: Option<String>,
         #[arg(long = "mask-exclude")]
         mask_exclude: Option<String>,
+    },
+    /// Biome sphere brush (world-space shape, 4×4×4 cells)
+    Biome {
+        #[arg(long, help = "x,y,z center")]
+        at: String,
+        #[arg(long)]
+        radius: f64,
+        #[arg(long, help = "minecraft:desert or desert")]
+        biome: String,
+        #[arg(long)]
+        mask: Option<String>,
+        #[arg(long = "mask-exclude")]
+        mask_exclude: Option<String>,
+        #[arg(long, default_value_t = false)]
+        hollow: bool,
+    },
+    /// Biome vertical cylinder brush
+    #[command(name = "biome-cyl")]
+    BiomeCyl {
+        #[arg(long, help = "x,z center")]
+        at: String,
+        #[arg(long)]
+        y: i32,
+        #[arg(long)]
+        radius: f64,
+        #[arg(long)]
+        height: i32,
+        #[arg(long, help = "minecraft:desert or desert")]
+        biome: String,
+        #[arg(long)]
+        mask: Option<String>,
+        #[arg(long = "mask-exclude")]
+        mask_exclude: Option<String>,
+        #[arg(long, default_value_t = false)]
+        hollow: bool,
     },
 }
 
@@ -762,7 +813,7 @@ fn run() -> Result<()> {
                         println!("{line}");
                     }
                 }
-                EditCmd::TickParticipate {
+                EditCmd::Tick {
                     from,
                     to,
                     rounds,
@@ -770,9 +821,29 @@ fn run() -> Result<()> {
                 } => {
                     let (cx1, cz1) = parse_xz(&from)?;
                     let (cx2, cz2) = parse_xz(&to)?;
-                    let lines = world.tick_participate(cx1, cz1, cx2, cz2, rounds, speed)?;
+                    let (lines, action) =
+                        world.tick_offline(cx1, cz1, cx2, cz2, rounds, speed)?;
                     for line in lines {
                         println!("{line}");
+                    }
+                    if let Some(action) = action {
+                        if cli.json {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "id": action.id,
+                                    "description": action.description,
+                                    "changed": action.changed_count(),
+                                })
+                            );
+                        } else {
+                            println!(
+                                "action={} changed={} ({})",
+                                action.id,
+                                action.changed_count(),
+                                action.description
+                            );
+                        }
                     }
                 }
                 other => {
@@ -951,6 +1022,38 @@ fn run() -> Result<()> {
                                     parse_mask_opt(mask.as_deref(), mask_exclude.as_deref())?;
                                 world.brush_clipboard(x, y, z, radius, mask)?
                             }
+                            BrushCmd::Biome {
+                                at,
+                                radius,
+                                biome,
+                                mask,
+                                mask_exclude,
+                                hollow,
+                            } => {
+                                let (cx, cy, cz) = parse_xyz_i(&at)?;
+                                let mask =
+                                    parse_mask_opt(mask.as_deref(), mask_exclude.as_deref())?;
+                                world.brush_biome_sphere(
+                                    cx, cy, cz, radius, &biome, mask, hollow,
+                                )?
+                            }
+                            BrushCmd::BiomeCyl {
+                                at,
+                                y,
+                                radius,
+                                height,
+                                biome,
+                                mask,
+                                mask_exclude,
+                                hollow,
+                            } => {
+                                let (cx, cz) = parse_xz(&at)?;
+                                let mask =
+                                    parse_mask_opt(mask.as_deref(), mask_exclude.as_deref())?;
+                                world.brush_biome_cyl(
+                                    cx, cz, y, radius, height, &biome, mask, hollow,
+                                )?
+                            }
                         },
                         EditCmd::Smooth {
                             from,
@@ -961,6 +1064,19 @@ fn run() -> Result<()> {
                             let (x1, y1, z1) = parse_xyz_i(&from)?;
                             let (x2, y2, z2) = parse_xyz_i(&to)?;
                             world.smooth(x1, y1, z1, x2, y2, z2, iterations, kernel)?
+                        }
+                        EditCmd::Smooth3d {
+                            from,
+                            to,
+                            iterations,
+                            kernel,
+                            solid,
+                        } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            world.smooth3d(
+                                x1, y1, z1, x2, y2, z2, iterations, kernel, solid,
+                            )?
                         }
                         EditCmd::Biome { from, to, biome } => {
                             let (x1, y1, z1) = parse_xyz_i(&from)?;
@@ -1007,7 +1123,7 @@ fn run() -> Result<()> {
                         | EditCmd::Flip { .. }
                         | EditCmd::Gen { .. }
                         | EditCmd::FixLight { .. }
-                        | EditCmd::TickParticipate { .. } => unreachable!(),
+                        | EditCmd::Tick { .. } => unreachable!(),
                     };
                     if cli.json {
                         println!("{}", serde_json::to_string(&action)?);

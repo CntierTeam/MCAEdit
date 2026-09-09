@@ -16,7 +16,9 @@ Brush：`--at` + `--radius`（柱再加 `--height`）。
 | 球 / 空心球 | `edit sphere [--hollow]` |
 | 柱 / 空心柱 | `edit cyl [--hollow]` |
 | Brush 球/柱/剪贴板 | `edit brush sphere\|cyl\|clipboard` |
-| Smooth | `edit smooth [--iterations] [--kernel]` |
+| **Biome brush** | `edit brush biome\|biome-cyl --biome …`（世界空间形状 → 4×4×4） |
+| Smooth（heightmap） | `edit smooth [--iterations] [--kernel]` |
+| **Smooth3d** | `edit smooth3d [--iterations] [--kernel] [--solid]` |
 | Biome paint | `edit biome --biome`（section 4×4×4） |
 | 堆叠 | `edit stack --n --dx/--dy/--dz` |
 | 移动 | `edit move --dx/--dy/--dz` |
@@ -27,5 +29,6 @@ Brush：`--at` + `--radius`（柱再加 `--height`）。
 | `.schem` | `schem export`/`import`/`info`（Sponge v2 写；v2/v3 读） |
 | 地形 gen | `edit gen --seed --dim --from/--to` |
 | 重光照 | `edit fix-light` |
-| tick | `edit tick-participate` |
+| **离线 tick** | `edit tick`（别名 `tick-participate`） |
 | 离线截图 | `view screenshot --from/--to [--out] [--width] [--height]` |
+| Linear region | session 打开 `.linear`；commit 按源格式写回 |

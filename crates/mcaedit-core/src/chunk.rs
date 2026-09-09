@@ -77,6 +77,17 @@ impl ChunkData {
         Ok(None)
     }
 
+    /// Y indices of present sections (may be empty for brand-new chunks).
+    pub fn section_ys(&self) -> Vec<i8> {
+        let Ok(sections) = self.sections() else {
+            return Vec::new();
+        };
+        sections
+            .iter()
+            .filter_map(|s| section_y_of(s).ok())
+            .collect()
+    }
+
     pub fn read_section_blocks(&self, section_y: i8) -> Result<SectionBlocks> {
         if let Some(idx) = self.find_section_index(section_y)? {
             section_blocks_from_json(&self.sections()?[idx])

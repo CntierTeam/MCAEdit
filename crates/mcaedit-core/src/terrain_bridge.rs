@@ -219,12 +219,16 @@ pub fn fix_light(
     Ok(lines)
 }
 
-/// Rebuild random-tick participation masks and advance scheduled block/fluid ticks.
+/// Rebuild random-tick participation masks and advance scheduled block/fluid ticks
+/// via the vendored world crate (may be lossy on minimal MCAEdit-authored chunks).
 ///
-/// Full block random-tick *behaviour* lives in the server crate; offline we:
-/// 1. rebuild `randomly_ticking_mask` / section caches
-/// 2. sample random-tick candidates (`--rounds`)
-/// 3. step scheduled tick queues (`block_ticks` / `fluid_ticks`) for `--rounds`
+/// Prefer [`crate::world::WorldView::tick_offline`] / `edit tick` for safe offline
+/// growth + NBT scheduled-tick stepping.
+///
+/// Full block random-tick *behaviour* lives in the server crate; this path:
+/// 1. rebuilds `randomly_ticking_mask` / section caches
+/// 2. samples random-tick candidates (`--rounds`)
+/// 3. steps scheduled tick queues (`block_ticks` / `fluid_ticks`) for `--rounds`
 pub fn tick_participate(
     world: &mut WorldView<'_>,
     from_cx: i32,

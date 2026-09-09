@@ -825,13 +825,8 @@ impl<'a> WorldView<'a> {
         biome: &str,
     ) -> Result<Action> {
         let box_ = crate::ops::Aabb::from_corners(x1, y1, z1, x2, y2, z2);
-        let biome = if biome.contains(':') {
-            biome.to_string()
-        } else {
-            format!("minecraft:{biome}")
-        };
+        let biome = normalize_biome_id(biome);
         let mut cells: BTreeSet<(i32, i32, i32)> = BTreeSet::new();
-        // Sample every block corner of intersecting biome cells.
         let min_x = box_.min_x & !3;
         let min_y = box_.min_y & !3;
         let min_z = box_.min_z & !3;
@@ -841,7 +836,6 @@ impl<'a> WorldView<'a> {
             while z <= box_.max_z {
                 let mut x = min_x;
                 while x <= box_.max_x {
-                    // cell covers [x,x+3] etc; include if intersects AABB
                     if x <= box_.max_x
                         && x + 3 >= box_.min_x
                         && y <= box_.max_y
@@ -857,7 +851,98 @@ impl<'a> WorldView<'a> {
             }
             y += 4;
         }
+        self.apply_biome_cells(
+            cells,
+            &biome,
+            None,
+            format!(
+                "biome {biome} ({},{},{})..({},{},{})",
+                box_.min_x, box_.min_y, box_.min_z, box_.max_x, box_.max_y, box_.max_z
+            ),
+        )
+    }
 
+    /// Biome sphere brush: world-space sphere, snapped to 4×4×4 biome cells.
+    /// Optional `--mask` filters on the block at each cell origin.
+    #[allow(clippy::too_many_arguments)]
+    pub fn brush_biome_sphere(
+        &mut self,
+        cx: i32,
+        cy: i32,
+        cz: i32,
+        radius: f64,
+        biome: &str,
+        mask: Option<Mask>,
+        hollow: bool,
+    ) -> Result<Action> {
+        let biome = normalize_biome_id(biome);
+        let positions = crate::ops::sphere_positions(cx, cy, cz, radius, hollow);
+        let cells: BTreeSet<(i32, i32, i32)> = positions
+            .into_iter()
+            .map(|(x, y, z)| biome_cell_origin(x, y, z))
+            .collect();
+        let kind = if hollow {
+            "brush biome hsphere"
+        } else {
+            "brush biome sphere"
+        };
+        self.apply_biome_cells(
+            cells,
+            &biome,
+            mask.as_ref(),
+            format!(
+                "{kind} @{cx},{cy},{cz} r={radius} -> {biome}{}",
+                mask.as_ref()
+                    .map(|m| format!(" mask={}", m.describe()))
+                    .unwrap_or_default()
+            ),
+        )
+    }
+
+    /// Biome vertical cylinder brush (world-space), snapped to 4×4×4 cells.
+    #[allow(clippy::too_many_arguments)]
+    pub fn brush_biome_cyl(
+        &mut self,
+        cx: i32,
+        cz: i32,
+        y_base: i32,
+        radius: f64,
+        height: i32,
+        biome: &str,
+        mask: Option<Mask>,
+        hollow: bool,
+    ) -> Result<Action> {
+        let biome = normalize_biome_id(biome);
+        let positions = crate::ops::cyl_positions(cx, cz, y_base, radius, height, hollow);
+        let cells: BTreeSet<(i32, i32, i32)> = positions
+            .into_iter()
+            .map(|(x, y, z)| biome_cell_origin(x, y, z))
+            .collect();
+        let kind = if hollow {
+            "brush biome hcyl"
+        } else {
+            "brush biome cyl"
+        };
+        self.apply_biome_cells(
+            cells,
+            &biome,
+            mask.as_ref(),
+            format!(
+                "{kind} @{cx},{y_base},{cz} r={radius} h={height} -> {biome}{}",
+                mask.as_ref()
+                    .map(|m| format!(" mask={}", m.describe()))
+                    .unwrap_or_default()
+            ),
+        )
+    }
+
+    fn apply_biome_cells(
+        &mut self,
+        cells: BTreeSet<(i32, i32, i32)>,
+        biome: &str,
+        mask: Option<&Mask>,
+        description: impl Into<String>,
+    ) -> Result<Action> {
         let mut dirty_chunks: BTreeMap<(i32, i32), ChunkData> = BTreeMap::new();
         let mut changes = Vec::new();
         for (x, y, z) in cells {
@@ -866,6 +951,12 @@ impl<'a> WorldView<'a> {
             if let std::collections::btree_map::Entry::Vacant(e) = dirty_chunks.entry((cx, cz)) {
                 e.insert(self.load_chunk(cx, cz)?);
             }
+            if let Some(m) = mask {
+                let block = dirty_chunks.get(&(cx, cz)).unwrap().get_block(x, y, z)?;
+                if !m.matches(&block) {
+                    continue;
+                }
+            }
             let before = dirty_chunks.get(&(cx, cz)).unwrap().get_biome(x, y, z)?;
             if before != biome {
                 changes.push(BiomeChange {
@@ -873,12 +964,10 @@ impl<'a> WorldView<'a> {
                     y,
                     z,
                     before,
-                    after: biome.clone(),
+                    after: biome.to_string(),
                 });
             }
         }
-
-        // Apply
         for c in &changes {
             let key = (c.x >> 4, c.z >> 4);
             dirty_chunks
@@ -889,18 +978,152 @@ impl<'a> WorldView<'a> {
         for chunk in dirty_chunks.values() {
             self.save_chunk(chunk)?;
         }
-
         let action = Action {
             id: 0,
-            description: format!(
-                "biome {biome} ({},{},{})..({},{},{})",
-                box_.min_x, box_.min_y, box_.min_z, box_.max_x, box_.max_y, box_.max_z
-            ),
+            description: description.into(),
             payload: ActionPayload::SetBiomes { changes },
         };
         let action = self.session.history.push(action)?;
         self.session.mark_dirty()?;
         Ok(action)
+    }
+
+    /// 3D voxel neighbourhood smooth over AABB (majority vote).
+    ///
+    /// Each iteration, every block in the AABB is replaced by the most common
+    /// neighbour state in a Chebyshev ball of radius `kernel` (including self).
+    /// Ties keep the current block. Suitable for softening caves / structures;
+    /// for heightmap-only terrain use [`Self::smooth`].
+    ///
+    /// `--mode solid` (via `solid_air`): vote air vs non-air first; solid winners
+    /// take the majority solid neighbour state.
+    #[allow(clippy::too_many_arguments)]
+    pub fn smooth3d(
+        &mut self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+        iterations: u32,
+        kernel: i32,
+        solid_air: bool,
+    ) -> Result<Action> {
+        let box_ = crate::ops::Aabb::from_corners(x1, y1, z1, x2, y2, z2);
+        let k = kernel.max(1);
+        let iters = iterations.max(1);
+        let mut dirty: BTreeMap<(i32, i32), ChunkData> = BTreeMap::new();
+
+        // Read expanded volume so edge neighbourhood is complete.
+        let rx0 = box_.min_x - k;
+        let rx1 = box_.max_x + k;
+        let ry0 = box_.min_y - k;
+        let ry1 = box_.max_y + k;
+        let rz0 = box_.min_z - k;
+        let rz1 = box_.max_z + k;
+
+        let mut grid: BTreeMap<(i32, i32, i32), BlockState> = BTreeMap::new();
+        for z in rz0..=rz1 {
+            for y in ry0..=ry1 {
+                for x in rx0..=rx1 {
+                    let cx = x >> 4;
+                    let cz = z >> 4;
+                    if let std::collections::btree_map::Entry::Vacant(e) = dirty.entry((cx, cz)) {
+                        e.insert(self.load_chunk(cx, cz)?);
+                    }
+                    let b = dirty.get(&(cx, cz)).unwrap().get_block(x, y, z)?;
+                    grid.insert((x, y, z), b);
+                }
+            }
+        }
+
+        for _ in 0..iters {
+            let prev = grid.clone();
+            for z in box_.min_z..=box_.max_z {
+                for y in box_.min_y..=box_.max_y {
+                    for x in box_.min_x..=box_.max_x {
+                        let mut counts: BTreeMap<String, (u32, BlockState)> = BTreeMap::new();
+                        let mut solid_n = 0u32;
+                        let mut air_n = 0u32;
+                        let mut solid_counts: BTreeMap<String, (u32, BlockState)> = BTreeMap::new();
+                        for dz in -k..=k {
+                            for dy in -k..=k {
+                                for dx in -k..=k {
+                                    let xx = x + dx;
+                                    let yy = y + dy;
+                                    let zz = z + dz;
+                                    let Some(b) = prev.get(&(xx, yy, zz)) else {
+                                        continue;
+                                    };
+                                    let key = b.to_compact();
+                                    let e = counts.entry(key.clone()).or_insert((0, b.clone()));
+                                    e.0 += 1;
+                                    if b.is_air_like() {
+                                        air_n += 1;
+                                    } else {
+                                        solid_n += 1;
+                                        let e = solid_counts.entry(key).or_insert((0, b.clone()));
+                                        e.0 += 1;
+                                    }
+                                }
+                            }
+                        }
+                        let next = if solid_air {
+                            if solid_n > air_n {
+                                solid_counts
+                                    .into_iter()
+                                    .max_by_key(|(_, (n, _))| *n)
+                                    .map(|(_, (_, b))| b)
+                                    .unwrap_or_else(|| prev[&(x, y, z)].clone())
+                            } else if air_n > solid_n {
+                                BlockState::air()
+                            } else {
+                                prev[&(x, y, z)].clone()
+                            }
+                        } else {
+                            counts
+                                .into_iter()
+                                .max_by_key(|(_, (n, _))| *n)
+                                .map(|(_, (_, b))| b)
+                                .unwrap_or_else(|| prev[&(x, y, z)].clone())
+                        };
+                        grid.insert((x, y, z), next);
+                    }
+                }
+            }
+        }
+
+        let mut changes = Vec::new();
+        for z in box_.min_z..=box_.max_z {
+            for y in box_.min_y..=box_.max_y {
+                for x in box_.min_x..=box_.max_x {
+                    let after = grid[&(x, y, z)].clone();
+                    let before = dirty
+                        .get(&(x >> 4, z >> 4))
+                        .unwrap()
+                        .get_block(x, y, z)?;
+                    if before != after {
+                        changes.push(BlockChange {
+                            x,
+                            y,
+                            z,
+                            before,
+                            after,
+                        });
+                    }
+                }
+            }
+        }
+
+        let mode = if solid_air { "solid" } else { "majority" };
+        self.apply_changes(
+            changes,
+            format!(
+                "smooth3d ({},{},{})..({},{},{}) iters={iters} kernel={k} mode={mode}",
+                box_.min_x, box_.min_y, box_.min_z, box_.max_x, box_.max_y, box_.max_z
+            ),
+        )
     }
 
     pub fn get_biome(&self, x: i32, y: i32, z: i32) -> Result<String> {
@@ -940,7 +1163,26 @@ impl<'a> WorldView<'a> {
         rounds: u32,
         random_tick_speed: u32,
     ) -> Result<Vec<String>> {
-        crate::terrain_bridge::tick_participate(
+        self.tick_offline(from_cx, from_cz, to_cx, to_cz, rounds, random_tick_speed)
+            .map(|(lines, _)| lines)
+    }
+
+    /// First-class offline tick: step scheduled tick NBT queues and apply
+    /// approximate random-tick growth (crops / cane / grass). Growth mutations
+    /// are undoable as one history entry.
+    ///
+    /// Does **not** round-trip chunks through the terrain bridge (that path can
+    /// drop blocks). Use `edit gen` / `fix-light` for bridge features.
+    pub fn tick_offline(
+        &mut self,
+        from_cx: i32,
+        from_cz: i32,
+        to_cx: i32,
+        to_cz: i32,
+        rounds: u32,
+        random_tick_speed: u32,
+    ) -> Result<(Vec<String>, Option<Action>)> {
+        let (planned, stats) = crate::tick::plan_offline_random_ticks(
             self,
             from_cx,
             from_cz,
@@ -948,7 +1190,34 @@ impl<'a> WorldView<'a> {
             to_cz,
             rounds,
             random_tick_speed,
-        )
+        )?;
+        let mut lines = vec![format!(
+            "tick chunks={} rounds={} speed={} samples={} candidates={} due_block={} due_fluid={}",
+            stats.chunks,
+            rounds.max(1),
+            random_tick_speed.max(1),
+            stats.samples,
+            stats.candidates,
+            stats.due_block,
+            stats.due_fluid
+        )];
+        let action = if planned.is_empty() {
+            None
+        } else {
+            Some(self.apply_changes(
+                planned,
+                format!(
+                    "tick growth chunks~{} samples={} candidates={} mutations={}",
+                    stats.chunks, stats.samples, stats.candidates, stats.mutations
+                ),
+            )?)
+        };
+        lines.push(format!(
+            "tick_growth mutations={} undoable={}",
+            stats.mutations,
+            action.is_some()
+        ));
+        Ok((lines, action))
     }
 
     pub fn set_section(
@@ -1501,5 +1770,13 @@ impl<'a> WorldView<'a> {
             }
         }
         Ok(lines)
+    }
+}
+
+fn normalize_biome_id(biome: &str) -> String {
+    if biome.contains(':') {
+        biome.to_string()
+    } else {
+        format!("minecraft:{biome}")
     }
 }
