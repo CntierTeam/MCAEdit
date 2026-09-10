@@ -32,7 +32,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Force
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/install.sh \
-  | bash -s -- --version v0.9.0 --force
+  | bash -s -- --version v0.10.0 --force
 ./scripts/install.sh --from-source --symlink-skill --force
 ./scripts/install.sh --uninstall
 ```
@@ -76,8 +76,8 @@ mcaedit --session demo edit tick --from 0,0 --to 3,3 --rounds 40 --speed 3
 产物：`mcaedit-<target>.tar.gz`、`mcaedit-skill.tar.gz`、`install.sh` / `install.ps1`。
 
 ```bash
-git tag v0.9.0
-git push origin v0.9.0
+git tag v0.10.0
+git push origin v0.10.0
 ```
 
 ## level.dat / 新建世界 / 结构
@@ -174,9 +174,9 @@ mcaedit --session demo view screenshot \
 
 可选：`--camera x,y,z` 与 `--look x,y,z` 覆盖默认取景。
 
-**方块贴图（Minecraft 26.2 client jar）**：优先读 `assets/minecraft/textures/block/*.png`，软光栅按 UV 最近邻采样；缺 jar 时回退调色板实色（不崩溃）。
+**方块模型 + 贴图（Minecraft 26.2 client jar）**：读 `assets/minecraft/blockstates/*.json` + `models/block/*.json`（variants / multipart）与 `textures/block/*.png`；软光栅按模型 UV 最近邻采样。缺 jar 时回退调色板立方体（不崩溃）。
 
-**光照**：screenshot / preview 共用原版风格面着色（`Direction.getShade` 六面阶梯：顶 1.0、南北 0.8、东西 0.6、底 0.5）× 全日空 lightmap 曲线；不是简单 Lambert。v1 不做邻域 AO / 完整 lightmap 贴图。
+**光照**：采样 section `BlockLight`/`SkyLight` × lightmap 曲线 × 六面 shade，外加简化顶点 AO。室内/火把效果依赖世界已有光数据（可用 `edit fix-light`）。
 
 ```bash
 # 显式指定 client jar，或 versions/26.2/ 目录
@@ -189,10 +189,10 @@ export MCAEDIT_MINECRAFT_JAR=~/.minecraft/versions/26.2/26.2.jar
 mcaedit view screenshot ... --no-textures
 ```
 
-未指定时自动探测：`/other/Minecraft/.minecraft/versions/26.2/26.2.jar`、`~/.minecraft/...`、Flatpak、Prism/PolyMC/MultiMC、HMCL、`%APPDATA%/.minecraft/...`。环境变量 `MCAEDIT_MINECRAFT_JAR` / `MCAEDIT_ASSETS_JAR`。日志形如 `textures=jar path=...` 或 `textures=palette reason=...`。
+未指定时自动探测：`/other/Minecraft/.minecraft/versions/26.2/26.2.jar`、`~/.minecraft/...`、Flatpak、Prism/PolyMC/MultiMC、HMCL、`%APPDATA%/.minecraft/...`。环境变量 `MCAEDIT_MINECRAFT_JAR` / `MCAEDIT_ASSETS_JAR`。日志形如 `models+textures jar path=...` 或 `palette reason=...`。
 大体积截图默认上限 2e6 cells（`--max-cells` / `MCAEDIT_VIEW_MAX_CELLS`）。仓库**不**内嵌整包 jar。
 
-**`view preview` / `preview`** 打开原生窗口，轮询 session 工作副本 `region/*.mca`、`meta.json`、`HEAD`，在另一终端跑 `edit fill/brush/...` 时可看实时建造进度（face-cull 软光栅，与 screenshot 共用 mesh / 贴图管线）。
+**`view preview` / `preview`** 打开原生窗口，轮询 session 工作副本 `region/*.mca`、`meta.json`、`HEAD`，在另一终端跑 `edit fill/brush/...` 时可看实时建造进度（与 screenshot 共用 model/mesh/贴图/光照管线）。
 
 ```bash
 # 终端 A：预览（需要 DISPLAY 或 Wayland）
@@ -219,7 +219,7 @@ mcaedit --session demo edit cut --from 0,64,0 --to 3,65,2
 
 对照表见 skill：`.codex/skills/mcaedit/references/region-ops.md`。本功能的离线取景/渲染思路参考 [Arcus92/minecraft-web-viewer](https://github.com/Arcus92/minecraft-web-viewer) 与 [Arcus92/minecraft-web-exporter](https://github.com/Arcus92/minecraft-web-exporter)（MIT）。
 
-已知限制：biome 为 section 内 4×4×4；离线 tick 为近似生长 + scheduled 队列步进（非完整服务端）；Linear 工作副本以 Anvil 编辑后按源格式写回；view 贴图为立方体 UV + 启发式 top/side/bottom（**非完整 block model**）；动画贴图仅首帧；光照为 MC 六面明暗 + 全日空 lightmap，**无 smooth-AO / 方块光**。
+已知限制：biome 为 section 内 4×4×4；离线 tick 为近似生长 + scheduled 队列步进（非完整服务端）；Linear 工作副本以 Anvil 编辑后按源格式写回；view 已加载 vanilla blockstates/models + BlockLight/SkyLight（参考 Arcus92/minecraft-web-exporter）；无 CTM/流体曲面/实体方块特殊渲染；动画贴图仅首帧；AO 为简化顶点遮挡。
 ## Multi-session collaboration
 
 ```bash

@@ -231,6 +231,25 @@ impl ChunkData {
         Ok(changed)
     }
 
+    /// Read vanilla nibble light arrays (`BlockLight` / `SkyLight`).
+    /// Missing arrays → `(None, None)`; each present array is 2048 bytes.
+    #[allow(clippy::type_complexity)]
+    pub fn read_section_light(&self, section_y: i8) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+        let Some(idx) = self.find_section_index(section_y)? else {
+            return Ok((None, None));
+        };
+        let sec = &self.sections()?[idx];
+        let block = sec
+            .get("BlockLight")
+            .and_then(json_byte_array)
+            .filter(|b| b.len() == 2048);
+        let sky = sec
+            .get("SkyLight")
+            .and_then(json_byte_array)
+            .filter(|b| b.len() == 2048);
+        Ok((block, sky))
+    }
+
     /// Write vanilla nibble light arrays (`BlockLight` / `SkyLight`, 2048 bytes each).
     /// Creates an air section if missing so light can be stored.
     pub fn write_section_light(
@@ -350,6 +369,28 @@ fn section_blocks_from_json(sec: &JsonValue) -> Result<SectionBlocks> {
         })
     });
     SectionBlocks::from_palette_nbt(palette, data.as_deref())
+}
+
+fn json_byte_array(v: &JsonValue) -> Option<Vec<u8>> {
+    match v {
+        JsonValue::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for e in arr {
+                let b = e
+                    .as_i64()
+                    .or_else(|| e.as_u64().map(|u| u as i64))?
+                    as i8 as u8;
+                out.push(b);
+            }
+            Some(out)
+        }
+        JsonValue::String(s) => {
+            // Some serializers store byte arrays as base64 — not used by us.
+            let _ = s;
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Local biome cell (0..3) inside a section for block world coords.

@@ -19,7 +19,7 @@ metadata:
 # MCAEdit
 
 产品：**`mcaedit`** — 离线 Minecraft Anvil（`.mca`）/ Linear（`.linear`）编辑 CLI（**GPL-3.0**）。
-**当前版本：0.9.0**（`mcaedit --version`；与 workspace `Cargo.toml` 对齐）。
+**当前版本：0.10.0**（`mcaedit --version`；与 workspace `Cargo.toml` 对齐）。
 
 你是 **操作员**：用户要开 session、inspect、填方/替换/几何、brush、mask/% pattern、smooth/smooth3d、biome、剪贴板、模板、`.schem`、**结构 `.nbt`**、**level.dat / world create**、undo、地形 gen、fix-light、**tick**、view 截图 / **实时 preview**、commit → **自己在 shell 执行 `mcaedit`**，不要只拼命令给用户。
 
@@ -84,7 +84,7 @@ mcaedit edit fix-light --from=-2,-2 --to=1,1 --dim overworld
 ### 截图贴图 / 大体积
 
 - `--minecraft <jar|versions/dir>` 或 `MCAEDIT_MINECRAFT_JAR` / `MCAEDIT_ASSETS_JAR`；可省略，自动探测 26.2。
-- 日志：`textures=jar path=...`（贴图成功）vs `textures=palette reason=no-textures|jar-not-found|...`（回退实色，不崩溃）。
+- 日志：`models+textures jar path=...`（blockstate/model + 贴图成功）vs `textures=jar path=...`（仅贴图探测）vs `palette reason=no-textures|jar-not-found|...`（回退实色，不崩溃）。
 - **无 48³ 硬上限**（那是 `inspect select` / preview 自动裁的旧习惯）。大 AABB 用 `--max-cells` 或 `MCAEDIT_VIEW_MAX_CELLS`（默认 **2000000**）。超大体积 mesh 会慢，可先缩小选区或降分辨率。
 
 ```bash
@@ -151,7 +151,7 @@ mcaedit inspect select --from=0,64,0 --to=7,66,7   # 小选区可视化
 
 ```bash
 command -v mcaedit || ~/.local/bin/mcaedit --help
-mcaedit --version   # 期望 0.9.0+
+mcaedit --version   # 期望 0.10.0+
 
 # 空目录建世界骨架（level.dat + region/）；默认 MC 26.2 DataVersion=4903
 mcaedit world create --path /tmp/newworld --name Demo --seed 42 --mc 26.2 --generator flat
@@ -266,9 +266,11 @@ mcaedit view preview --assets-jar ~/.minecraft/versions/26.2/26.2.jar
 
 自动探测路径（版本默认 **26.2**）：`/other/Minecraft/.minecraft/versions/26.2/26.2.jar`（buildTest 机）、`~/.minecraft/versions/26.2/26.2.jar`、Flatpak Mojang、Prism/PolyMC/MultiMC、`%APPDATA%/.minecraft/...`、HMCL 等。`--minecraft` 可指向 jar 或 `versions/26.2/` 目录。
 环境变量：`MCAEDIT_MINECRAFT_JAR` / `MCAEDIT_ASSETS_JAR`；大截图体积：`MCAEDIT_VIEW_MAX_CELLS`（默认 2000000）。
-日志：`textures=jar path=...` 或 `textures=palette reason=no-textures|jar-not-found|...`。
+日志：`models+textures jar path=...`（blockstate/model + 贴图成功）或 `palette reason=no-textures|jar-not-found|...`。
 
-v1 限制：立方体贴图 + face-cull，**无完整 block model**（台阶/栏杆/十字植物等仍按整方块或回退实色）；动画贴图只用首帧；光照为原版六面明暗阶梯（顶>南北>东西>底）× 全日空 lightmap，screenshot/preview 共用，无邻域 AO。
+**v0.10 渲染**：从 client jar 加载 `blockstates` + `models/block`（variants / multipart），按 element UV 贴图；采样 section `BlockLight`/`SkyLight` × lightmap × 六面 shade，并做廉价顶点 AO。缺 jar 时仍回退调色板立方体。
+
+仍缺 / 诚实限制：CTM、流体曲面、实体方块特殊渲染、完整邻域 AO（仅简化）、动画贴图仅首帧、水/岩浆硬编码流体几何未做。
 
 ## Linear region
 
@@ -313,8 +315,8 @@ curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/ins
 - 完整服务端 random-tick（光照/湿度/邻居更新/蜜蜂授粉等）；离线 tick 覆盖作物 age、甘蔗/仙人掌/竹子向上长、草/菌丝扩散、farmland 湿度递减，以及 scheduled tick 队列步进（到期条目移除，不执行完整方块行为）
 - 生物群系分辨率低于 4×4×4（MCA section biomes 固有限制）
 - Linear：支持读/写 v1 与 v2；工作副本仍以 Anvil 编辑
-- view 贴图：依赖本机 Minecraft client jar；无 jar 时调色板实色；非完整 blockstate 模型
-- view 光照：MC 六面 shade + lightmap 曲线；无 smooth AO / 方块光传播
+- view：依赖本机 Minecraft client jar；加载 blockstates/models + 贴图；缺 jar 时调色板立方体。无 CTM / 流体曲面 / 实体方块特殊模型；动画贴图仅首帧；AO 为简化顶点遮挡
+- view 光照：采样 chunk BlockLight/SkyLight × lightmap × 六面 shade（需先 `fix-light` 才有可信室内暗度）
 - **structure place**：稠密体积上限 64³；多 palette 结构只用第一套；旋转/镜像改方块坐标，**不**旋转方块 state（如楼梯朝向）
 - **structure clear-refs**：清 chunk `structures` starts/References，**不入** history undo
 - **level.dat**：写入常用字段（LevelName/Seed/Spawn/GameType/WorldGenSettings/Version…）；不保证与所有第三方服务端 sidecar 全集一致；现代布局额外写 `world_gen_settings.dat`

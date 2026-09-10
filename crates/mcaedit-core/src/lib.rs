@@ -3,6 +3,7 @@
 pub mod assets;
 pub mod action;
 pub mod build_ops;
+pub mod models;
 pub mod bitstorage;
 pub mod blockstate;
 pub mod chunk;

@@ -3,6 +3,7 @@ use crate::assets::{
 };
 use crate::blockstate::BlockState;
 use crate::error::{Error, Result};
+use crate::models::{should_cull_face, simple_ao, BakedBlock, ModelCatalog};
 use crate::region::{parse_region_name, RegionStore};
 use crate::session::Session;
 use crate::world::WorldView;
@@ -90,6 +91,8 @@ pub struct ViewVertex {
     pub uv: Vec2,
     /// 0 = solid color; else 1-based index into [`ViewMesh::textures`].
     pub tex_id: u16,
+    /// Pre-baked face shade × lightmap × AO (applied in raster).
+    pub shade: f32,
 }
 
 /// RGBA8 frame buffer (row-major).
@@ -118,12 +121,12 @@ impl<'a> WorldView<'a> {
         if req.width < 64 || req.height < 64 {
             return Err(Error::msg("width/height must be >= 64"));
         }
-        let (mut atlas, textures_label) =
-            resolve_atlas_cli(req.minecraft.as_deref(), req.assets_jar.as_deref(), req.no_textures);
+        let (mut catalog, textures_label) =
+            resolve_models_cli(req.minecraft.as_deref(), req.assets_jar.as_deref(), req.no_textures);
         let mesh = self.build_view_mesh_with_textures_limited(
             req.from,
             req.to,
-            atlas.as_mut(),
+            catalog.as_mut(),
             req.max_cells,
         )?;
         let (look, camera) = default_camera_for_mesh(&mesh, req.look, req.camera);
@@ -145,7 +148,7 @@ impl<'a> WorldView<'a> {
         })
     }
 
-    /// Build a face-culled cube mesh for an AABB (shared by screenshot and live preview).
+    /// Build a face-culled mesh for an AABB (shared by screenshot and live preview).
     pub fn build_view_mesh(
         &self,
         from: (i32, i32, i32),
@@ -154,25 +157,15 @@ impl<'a> WorldView<'a> {
         self.build_view_mesh_with_textures_limited(from, to, None, None)
     }
 
-    /// Like [`Self::build_view_mesh`], optionally sampling Minecraft block textures.
-    pub fn build_view_mesh_with_textures(
-        &self,
-        from: (i32, i32, i32),
-        to: (i32, i32, i32),
-        atlas: Option<&mut BlockTextureAtlas>,
-    ) -> Result<ViewMesh> {
-        self.build_view_mesh_with_textures_limited(from, to, atlas, None)
-    }
-
     /// Mesh build with optional `--max-cells` / env override.
     ///
     /// Performance: load each overlapping chunk/section **once** into a dense
-    /// occupancy+palette grid, then face-cull in memory (no per-cell disk I/O).
+    /// occupancy+palette+light grid, then bake vanilla models (or cube fallback).
     pub fn build_view_mesh_with_textures_limited(
         &self,
         from: (i32, i32, i32),
         to: (i32, i32, i32),
-        mut atlas: Option<&mut BlockTextureAtlas>,
+        mut catalog: Option<&mut ModelCatalog>,
         max_cells: Option<usize>,
     ) -> Result<ViewMesh> {
         let (min_x, max_x) = (from.0.min(to.0), from.0.max(to.0));
@@ -189,8 +182,9 @@ impl<'a> WorldView<'a> {
             )));
         }
 
-        // Dense grid: 0 = air, else 1-based palette index.
         let mut grid = vec![0u16; cells];
+        let mut sky = vec![15u8; cells];
+        let mut block_light = vec![0u8; cells];
         let mut palette: Vec<BlockState> = Vec::new();
         let mut palette_index: HashMap<BlockState, u16> = HashMap::new();
 
@@ -212,12 +206,11 @@ impl<'a> WorldView<'a> {
                 return 0;
             }
             palette.push(b.clone());
-            let id = palette.len() as u16; // 1-based
+            let id = palette.len() as u16;
             palette_index.insert(b, id);
             id
         };
 
-        // Chunk-batched preload (dominant speedup vs per-cell get_block disk thrash).
         let min_cx = min_x >> 4;
         let max_cx = max_x >> 4;
         let min_cz = min_z >> 4;
@@ -233,6 +226,7 @@ impl<'a> WorldView<'a> {
                 let bz1 = ((cz << 4) + 15).min(max_z);
                 for sy_i in min_sy..=max_sy {
                     let section = chunk.read_section_blocks(sy_i)?;
+                    let (bl_arr, sk_arr) = chunk.read_section_light(sy_i)?;
                     let by0 = ((sy_i as i32) << 4).max(min_y);
                     let by1 = (((sy_i as i32) << 4) + 15).min(max_y);
                     for y in by0..=by1 {
@@ -243,8 +237,16 @@ impl<'a> WorldView<'a> {
                                 let lx = (x & 15) as u8;
                                 let b = section.get(lx, ly, lz).clone();
                                 let id = insert_state(b);
+                                let i = idx(x, y, z);
                                 if id != 0 {
-                                    grid[idx(x, y, z)] = id;
+                                    grid[i] = id;
+                                }
+                                let ni = nibble_index(lx, ly, lz);
+                                if let Some(ref sk) = sk_arr {
+                                    sky[i] = get_nibble(sk, ni);
+                                }
+                                if let Some(ref bl) = bl_arr {
+                                    block_light[i] = get_nibble(bl, ni);
                                 }
                             }
                         }
@@ -262,24 +264,22 @@ impl<'a> WorldView<'a> {
             textures: Vec::new(),
         };
         mesh.triangles.reserve(cells / 4);
-        let mut tex_keys: HashMap<(u16, u8), u16> = HashMap::new();
+        let mut tex_keys: HashMap<String, u16> = HashMap::new();
+        let mut baked_cache: HashMap<u16, BakedBlock> = HashMap::new();
 
-        let neighbor_air = |x: i32, y: i32, z: i32| -> bool {
+        let light_at = |x: i32, y: i32, z: i32| -> (u8, u8) {
             if x < min_x || x > max_x || y < min_y || y > max_y || z < min_z || z > max_z {
-                return true;
+                return (15, 0);
             }
-            grid[idx(x, y, z)] == 0
+            let i = idx(x, y, z);
+            (sky[i], block_light[i])
         };
 
-        let face_key = |f: CubeFace| -> u8 {
-            match f {
-                CubeFace::NegX => 0,
-                CubeFace::PosX => 1,
-                CubeFace::NegY => 2,
-                CubeFace::PosY => 3,
-                CubeFace::NegZ => 4,
-                CubeFace::PosZ => 5,
+        let solid_at = |x: i32, y: i32, z: i32| -> bool {
+            if x < min_x || x > max_x || y < min_y || y > max_y || z < min_z || z > max_z {
+                return false;
             }
+            grid[idx(x, y, z)] != 0
         };
 
         for y in min_y..=max_y {
@@ -292,38 +292,174 @@ impl<'a> WorldView<'a> {
                     mesh.blocks += 1;
                     let b = &palette[(pid as usize) - 1];
                     let palette_col = color_for_block(b);
-                    let tint = if needs_biome_tint(&b.name) {
+                    let tint_base = if needs_biome_tint(&b.name) {
                         palette_col
                     } else {
                         Vec3::ONE
                     };
+
+                    baked_cache.entry(pid).or_insert_with(|| {
+                        if let Some(cat) = catalog.as_mut() {
+                            cat.bake_block(b)
+                        } else {
+                            BakedBlock::default()
+                        }
+                    });
+                    let baked = baked_cache.get(&pid).cloned().unwrap_or_default();
+
+                    if catalog.is_some() && !baked.faces.is_empty() {
+                        for face in &baked.faces {
+                            let neighbor_baked = face.cull.and_then(|c| {
+                                let (dx, dy, dz) = c.offset();
+                                let nx = x + dx;
+                                let ny = y + dy;
+                                let nz = z + dz;
+                                if nx < min_x
+                                    || nx > max_x
+                                    || ny < min_y
+                                    || ny > max_y
+                                    || nz < min_z
+                                    || nz > max_z
+                                {
+                                    return None;
+                                }
+                                let np = grid[idx(nx, ny, nz)];
+                                if np == 0 {
+                                    return None;
+                                }
+                                baked_cache.entry(np).or_insert_with(|| {
+                                    let nb = &palette[(np as usize) - 1];
+                                    if let Some(cat) = catalog.as_mut() {
+                                        cat.bake_block(nb)
+                                    } else {
+                                        BakedBlock::default()
+                                    }
+                                });
+                                baked_cache.get(&np).cloned()
+                            });
+                            if should_cull_face(face, neighbor_baked.as_ref()) {
+                                continue;
+                            }
+
+                            let (lx, ly, lz) = match face.cull {
+                                Some(c) => {
+                                    let (dx, dy, dz) = c.offset();
+                                    (x + dx, y + dy, z + dz)
+                                }
+                                None => (x, y, z),
+                            };
+                            let (sk, bl) = light_at(lx, ly, lz);
+                            let light = mc_lightmap_brightness(sk, bl);
+                            let face_shade = if face.shade {
+                                mc_face_shade(face.normal)
+                            } else {
+                                1.0
+                            };
+
+                            let tex_id = {
+                                let key = face.texture.clone();
+                                if let Some(id) = tex_keys.get(&key) {
+                                    *id
+                                } else if let Some(cat) = catalog.as_mut() {
+                                    let id = ensure_model_texture(cat, &mut mesh.textures, &key);
+                                    tex_keys.insert(key, id);
+                                    id
+                                } else {
+                                    0
+                                }
+                            };
+
+                            let tint = if face.tint || (tex_id > 0 && needs_biome_tint(&b.name)) {
+                                tint_base
+                            } else if tex_id > 0 {
+                                Vec3::ONE
+                            } else {
+                                palette_col
+                            };
+                            let offset = Vec3::new(x as f32, y as f32, z as f32);
+                            let verts = [
+                                (face.a, face.uv_a),
+                                (face.b, face.uv_b),
+                                (face.c, face.uv_c),
+                                (face.d, face.uv_d),
+                            ];
+                            let mut vv = [ViewVertex {
+                                pos: Vec3::ZERO,
+                                normal: face.normal,
+                                color: tint,
+                                uv: Vec2::ZERO,
+                                tex_id,
+                                shade: 1.0,
+                            }; 4];
+                            for (i, (p, uv)) in verts.into_iter().enumerate() {
+                                let ao = if face.shade {
+                                    simple_ao(solid_at, x, y, z, p, face.normal)
+                                } else {
+                                    1.0
+                                };
+                                vv[i] = ViewVertex {
+                                    pos: offset + p,
+                                    normal: face.normal,
+                                    color: tint,
+                                    uv,
+                                    tex_id,
+                                    shade: (face_shade * light * ao).clamp(0.05, 1.0),
+                                };
+                            }
+                            mesh.faces += 1;
+                            mesh.triangles.push(ViewTriangle {
+                                a: vv[0],
+                                b: vv[1],
+                                c: vv[2],
+                            });
+                            mesh.triangles.push(ViewTriangle {
+                                a: vv[0],
+                                b: vv[2],
+                                c: vv[3],
+                            });
+                        }
+                        continue;
+                    }
+
+                    // Fallback: unit cube + heuristic textures.
                     for (face_kind, mut face) in
                         cube_faces(x as f32, y as f32, z as f32, palette_col)
                     {
                         let nx = x + face.normal.x as i32;
                         let ny = y + face.normal.y as i32;
                         let nz = z + face.normal.z as i32;
-                        if !neighbor_air(nx, ny, nz) {
+                        if solid_at(nx, ny, nz) {
                             continue;
                         }
-                        let tex_id = match atlas.as_mut() {
-                            Some(a) => {
-                                let key = (pid, face_key(face_kind));
+                        let (sk, bl) = light_at(nx, ny, nz);
+                        let light = mc_lightmap_brightness(sk, bl);
+                        let face_shade = mc_face_shade(face.normal);
+                        let tex_id = match catalog.as_mut() {
+                            Some(cat) => {
+                                let key = format!("{}:{:?}", b.name, face_kind);
                                 if let Some(id) = tex_keys.get(&key) {
                                     *id
                                 } else {
-                                    let id = ensure_face_texture(a, &mut mesh.textures, &b.name, face_kind);
+                                    let id = ensure_face_texture(
+                                        cat.atlas_mut(),
+                                        &mut mesh.textures,
+                                        &b.name,
+                                        face_kind,
+                                    );
                                     tex_keys.insert(key, id);
                                     id
                                 }
                             }
                             None => 0,
                         };
-                        let vert_color = if tex_id > 0 { tint } else { palette_col };
+                        let vert_color = if tex_id > 0 { tint_base } else { palette_col };
                         mesh.faces += 1;
                         for v in [&mut face.v0, &mut face.v1, &mut face.v2, &mut face.v3] {
                             v.tex_id = tex_id;
                             v.color = vert_color;
+                            let local = v.pos - Vec3::new(x as f32, y as f32, z as f32);
+                            let ao = simple_ao(solid_at, x, y, z, local, face.normal);
+                            v.shade = (face_shade * light * ao).clamp(0.05, 1.0);
                         }
                         mesh.triangles.push(ViewTriangle {
                             a: face.v0,
@@ -388,6 +524,31 @@ pub fn resolve_atlas_cli(
     }
 }
 
+/// Resolve model+texture catalog (preferred for screenshot/preview).
+///
+/// Label: `models+textures jar path=...` or `palette reason=...`.
+pub fn resolve_models_cli(
+    minecraft: Option<&Path>,
+    assets_jar: Option<&Path>,
+    no_textures: bool,
+) -> (Option<ModelCatalog>, String) {
+    if no_textures {
+        return (None, "palette reason=no-textures".into());
+    }
+    // Prefer same jar discovery as atlas.
+    let path = crate::assets::resolve_assets_jar_path(minecraft, assets_jar, DEFAULT_MC_VERSION);
+    let Some(path) = path else {
+        return (None, "palette reason=jar-not-found".into());
+    };
+    match ModelCatalog::open(&path) {
+        Ok(c) => {
+            let label = format!("models+textures jar path={}", c.path().display());
+            (Some(c), label)
+        }
+        Err(_) => (None, "palette reason=jar-open-failed".into()),
+    }
+}
+
 fn ensure_face_texture(
     atlas: &mut BlockTextureAtlas,
     textures: &mut Vec<RgbaImage>,
@@ -402,6 +563,53 @@ fn ensure_face_texture(
     }
     textures.push(img);
     textures.len() as u16 // 1-based
+}
+
+fn ensure_model_texture(
+    catalog: &mut ModelCatalog,
+    textures: &mut Vec<RgbaImage>,
+    tex: &str,
+) -> u16 {
+    let Some(img) = catalog.texture_image_owned(tex) else {
+        return 0;
+    };
+    if textures.len() >= u16::MAX as usize - 1 {
+        return 0;
+    }
+    textures.push(img);
+    textures.len() as u16
+}
+
+fn nibble_index(x: u8, y: u8, z: u8) -> usize {
+    ((y as usize) << 8) | ((z as usize) << 4) | (x as usize)
+}
+
+fn get_nibble(data: &[u8], index: usize) -> u8 {
+    let b = data.get(index / 2).copied().unwrap_or(0);
+    if index.is_multiple_of(2) {
+        b & 0x0F
+    } else {
+        b >> 4
+    }
+}
+
+#[cfg(test)]
+mod light_nibble_tests {
+    use super::*;
+
+    #[test]
+    fn nibble_pack_low_high() {
+        // index 0 → low nibble, index 1 → high nibble of byte 0
+        let data = [0xAB]; // low=0xB, high=0xA
+        assert_eq!(get_nibble(&data, 0), 0x0B);
+        assert_eq!(get_nibble(&data, 1), 0x0A);
+    }
+
+    #[test]
+    fn lightmap_uses_max_of_sky_and_block() {
+        assert!((mc_lightmap_brightness(0, 15) - mc_lightmap_brightness(15, 0)).abs() < 1e-5);
+        assert!(mc_lightmap_brightness(0, 10) > mc_lightmap_brightness(0, 3));
+    }
 }
 
 /// Soft-rasterize a mesh (same lighting/cull pipeline as screenshot).
@@ -766,6 +974,7 @@ fn make_face(
             color,
             uv: uvs[0],
             tex_id: 0,
+            shade: 1.0,
         },
         v1: ViewVertex {
             pos: b,
@@ -773,6 +982,7 @@ fn make_face(
             color,
             uv: uvs[1],
             tex_id: 0,
+            shade: 1.0,
         },
         v2: ViewVertex {
             pos: c,
@@ -780,6 +990,7 @@ fn make_face(
             color,
             uv: uvs[2],
             tex_id: 0,
+            shade: 1.0,
         },
         v3: ViewVertex {
             pos: d,
@@ -787,6 +998,7 @@ fn make_face(
             color,
             uv: uvs[3],
             tex_id: 0,
+            shade: 1.0,
         },
     }
 }
@@ -802,13 +1014,12 @@ fn project(v: ViewVertex, vp: Mat4, width: f32, height: f32) -> Option<ScreenVer
     }
     let sx = (ndc.x * 0.5 + 0.5) * (width - 1.0);
     let sy = (1.0 - (ndc.y * 0.5 + 0.5)) * (height - 1.0);
-    // Minecraft flat face shading (not Lambert).
-    let shade = mc_vertex_shade(v.normal);
+    // Shade baked at mesh time (face × lightmap × AO).
     Some(ScreenVertex {
         x: sx,
         y: sy,
         z: ndc.z,
-        shade,
+        shade: v.shade,
         color: v.color,
         uv: v.uv,
         tex_id: v.tex_id,
@@ -992,61 +1203,40 @@ mod tests {
 
     #[test]
     fn rasterized_faces_keep_mc_brightness_order() {
-        // White unit quads facing +Y / +Z / +X / -Y; sample mean luminance.
+        // Prove baked shade survives raster: brighter shade → brighter pixels.
         let white = Vec3::ONE;
-        let mk = |normal: Vec3, origin: Vec3| -> ViewTriangle {
-            // Small quad centered near origin, facing `normal`.
-            let t = if normal.y.abs() > 0.5 {
-                Vec3::X
-            } else {
-                Vec3::Y
+        let n = Vec3::Z;
+        let quad = |shade: f32| -> ViewMesh {
+            let v = |pos: Vec3| ViewVertex {
+                pos,
+                normal: n,
+                color: white,
+                uv: Vec2::ZERO,
+                tex_id: 0,
+                shade,
             };
-            let b = normal.cross(t).normalize();
-            let t = b.cross(normal).normalize();
-            let o = origin;
-            ViewTriangle {
-                a: ViewVertex {
-                    pos: o - t - b,
-                    normal,
-                    color: white,
-                    uv: Vec2::ZERO,
-                    tex_id: 0,
-                },
-                b: ViewVertex {
-                    pos: o - t + b,
-                    normal,
-                    color: white,
-                    uv: Vec2::ZERO,
-                    tex_id: 0,
-                },
-                c: ViewVertex {
-                    pos: o + t + b,
-                    normal,
-                    color: white,
-                    uv: Vec2::ZERO,
-                    tex_id: 0,
-                },
-            }
-        };
-        let mean_luma = |normal: Vec3| -> f32 {
-            let mesh = ViewMesh {
-                triangles: vec![mk(normal, Vec3::ZERO)],
+            ViewMesh {
+                triangles: vec![ViewTriangle {
+                    a: v(Vec3::new(-1.0, -1.0, 0.0)),
+                    b: v(Vec3::new(1.0, -1.0, 0.0)),
+                    c: v(Vec3::new(-1.0, 1.0, 0.0)),
+                }],
                 blocks: 1,
                 faces: 1,
-                from: (-1, -1, -1),
-                to: (1, 1, 1),
+                from: (-1, -1, 0),
+                to: (1, 1, 0),
                 textures: vec![],
-            };
-            // Offset camera so look_at up=Y is never parallel to view (top/bottom).
-            let cam = normal * 3.0 + Vec3::new(0.4, 0.0, 0.25);
-            let frame = rasterize_view_mesh(&mesh, 64, 64, cam, Vec3::ZERO);
+            }
+        };
+        let mean = |shade: f32| -> f32 {
+            let frame =
+                rasterize_view_mesh(&quad(shade), 64, 64, Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO);
             let mut sum = 0.0f32;
             let mut n = 0u32;
             for i in (0..frame.pixels.len()).step_by(4) {
                 let r = frame.pixels[i] as f32;
                 let g = frame.pixels[i + 1] as f32;
                 let b = frame.pixels[i + 2] as f32;
-                // Skip sky pixels.
                 if (r - SKY[0] as f32).abs() < 1.0
                     && (g - SKY[1] as f32).abs() < 1.0
                     && (b - SKY[2] as f32).abs() < 1.0
@@ -1059,10 +1249,10 @@ mod tests {
             assert!(n > 20, "expected shaded face pixels, got {n}");
             sum / n as f32
         };
-        let top = mean_luma(Vec3::Y);
-        let south = mean_luma(Vec3::Z);
-        let east = mean_luma(Vec3::X);
-        let bottom = mean_luma(-Vec3::Y);
+        let top = mean(mc_face_shade(Vec3::Y));
+        let south = mean(mc_face_shade(Vec3::Z));
+        let east = mean(mc_face_shade(Vec3::X));
+        let bottom = mean(mc_face_shade(-Vec3::Y));
         assert!(
             top > south && south > east && east > bottom,
             "luma order top={top} south={south} east={east} bottom={bottom}"
@@ -1179,6 +1369,7 @@ mod tests {
                     color,
                     uv: Vec2::new(0.0, 1.0),
                     tex_id: 1,
+                    shade: 1.0,
                 },
                 b: ViewVertex {
                     pos: Vec3::new(1.0, -1.0, 0.0),
@@ -1186,6 +1377,7 @@ mod tests {
                     color,
                     uv: Vec2::new(1.0, 1.0),
                     tex_id: 1,
+                    shade: 1.0,
                 },
                 c: ViewVertex {
                     pos: Vec3::new(-1.0, 1.0, 0.0),
@@ -1193,6 +1385,7 @@ mod tests {
                     color,
                     uv: Vec2::new(0.0, 0.0),
                     tex_id: 1,
+                    shade: 1.0,
                 },
             }],
             blocks: 1,

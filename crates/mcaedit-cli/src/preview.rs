@@ -5,11 +5,11 @@ use anyhow::{Context, Result};
 use anyhow::bail;
 use eframe::egui;
 use glam::Vec3;
-use mcaedit_core::assets::BlockTextureAtlas;
+use mcaedit_core::models::ModelCatalog;
 use mcaedit_core::session::Session;
 use mcaedit_core::view::{
     default_camera_for_mesh, orbit_camera, preview_watch_token, rasterize_view_mesh,
-    resolve_atlas_cli, suggest_preview_aabb, PreviewWatchToken, RgbaFrame, ViewMesh,
+    resolve_models_cli, suggest_preview_aabb, PreviewWatchToken, RgbaFrame, ViewMesh,
 };
 use mcaedit_core::world::WorldView;
 use std::path::PathBuf;
@@ -87,7 +87,7 @@ struct PreviewApp {
     from: (i32, i32, i32),
     to: (i32, i32, i32),
     mesh: ViewMesh,
-    atlas: Option<BlockTextureAtlas>,
+    catalog: Option<ModelCatalog>,
     textures_label: String,
     token: PreviewWatchToken,
     last_reload: Instant,
@@ -114,15 +114,15 @@ impl PreviewApp {
     ) -> Result<Self> {
         let session_root = session.root.clone();
         let token = preview_watch_token(&session_root)?;
-        let (atlas, textures_label) = resolve_atlas_cli(
+        let (catalog, textures_label) = resolve_models_cli(
             opts.minecraft.as_deref(),
             opts.assets_jar.as_deref(),
             opts.no_textures,
         );
-        let mut atlas = atlas;
+        let mut catalog = catalog;
         let world = WorldView::new(&mut session);
         let mesh = world
-            .build_view_mesh_with_textures_limited(from, to, atlas.as_mut(), opts.max_cells)
+            .build_view_mesh_with_textures_limited(from, to, catalog.as_mut(), opts.max_cells)
             .context("initial mesh build")?;
         let (look, _cam) = default_camera_for_mesh(&mesh, None, None);
         let span = {
@@ -137,7 +137,7 @@ impl PreviewApp {
             from,
             to,
             mesh,
-            atlas,
+            catalog,
             textures_label,
             token,
             last_reload: Instant::now(),
@@ -196,7 +196,7 @@ impl PreviewApp {
         self.mesh = world.build_view_mesh_with_textures_limited(
             self.from,
             self.to,
-            self.atlas.as_mut(),
+            self.catalog.as_mut(),
             self.opts.max_cells,
         )?;
         let (look, _) = default_camera_for_mesh(&self.mesh, None, None);

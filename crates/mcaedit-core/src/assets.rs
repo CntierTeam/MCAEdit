@@ -394,6 +394,11 @@ fn read_png_from_jar(jar: &Path, entry: &str) -> Option<RgbaImage> {
 }
 
 /// Animated MC textures are vertical frame strips (`height = width * frames`).
+pub fn first_animation_frame_pub(img: RgbaImage) -> RgbaImage {
+    first_animation_frame(img)
+}
+
+/// Animated MC textures are vertical frame strips (`height = width * frames`).
 fn first_animation_frame(img: RgbaImage) -> RgbaImage {
     let w = img.width();
     let h = img.height();

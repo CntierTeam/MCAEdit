@@ -2242,7 +2242,7 @@ fn run_preview_cmd(cwd: &std::path::Path, session: &Session, launch: PreviewLaun
             (Some(f), Some(t)) => (f, t),
             _ => suggest_preview_aabb(session)?,
         };
-        let (_atlas_probe, textures_label) = mcaedit_core::view::resolve_atlas_cli(
+        let (_models_probe, textures_label) = mcaedit_core::view::resolve_models_cli(
             launch.minecraft.as_deref(),
             launch.assets_jar.as_deref(),
             launch.no_textures,
