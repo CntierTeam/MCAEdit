@@ -231,6 +231,55 @@ impl ChunkData {
         Ok(changed)
     }
 
+    /// Write vanilla nibble light arrays (`BlockLight` / `SkyLight`, 2048 bytes each).
+    /// Creates an air section if missing so light can be stored.
+    pub fn write_section_light(
+        &mut self,
+        section_y: i8,
+        block_light: &[u8],
+        sky_light: &[u8],
+    ) -> Result<()> {
+        if block_light.len() != 2048 || sky_light.len() != 2048 {
+            return Err(Error::msg("section light arrays must be 2048 bytes"));
+        }
+        if self.find_section_index(section_y)?.is_none() {
+            self.write_section_blocks(section_y, &SectionBlocks::air())?;
+        }
+        let idx = self
+            .find_section_index(section_y)?
+            .ok_or_else(|| Error::msg("section missing after create"))?;
+        let sec = &mut self.sections_mut()?[idx];
+        let obj = sec
+            .as_object_mut()
+            .ok_or_else(|| Error::msg("section not object"))?;
+        let bl: Vec<JsonValue> = block_light
+            .iter()
+            .map(|&b| JsonValue::from(b as i8 as i64))
+            .collect();
+        let sl: Vec<JsonValue> = sky_light
+            .iter()
+            .map(|&b| JsonValue::from(b as i8 as i64))
+            .collect();
+        obj.insert("BlockLight".into(), JsonValue::Array(bl));
+        obj.insert("SkyLight".into(), JsonValue::Array(sl));
+        Ok(())
+    }
+
+    pub fn set_light_on(&mut self, on: bool) {
+        if let Some(obj) = self.root.as_object_mut() {
+            obj.insert("isLightOn".into(), JsonValue::Bool(on));
+        }
+    }
+
+    pub fn set_status_full(&mut self) {
+        if let Some(obj) = self.root.as_object_mut() {
+            obj.insert(
+                "Status".into(),
+                JsonValue::String("minecraft:full".into()),
+            );
+        }
+    }
+
     pub fn section_palette_list(&self, section_y: i8) -> Result<Vec<BlockState>> {
         let Some(idx) = self.find_section_index(section_y)? else {
             return Ok(vec![BlockState::air()]);

@@ -61,7 +61,7 @@ mcaedit --session demo edit tick --from 0,0 --to 3,3 --rounds 40 --speed 3
 ```
 
 - `gen`：Full 阶段写入 session 工作副本 `region/`
-- `fix-light`：重算天空/方块光
+- `fix-light`：只重算天空/方块光（保留方块与调色板；`--seed`/`--dim` 仅定维度范围，不 gen）
 - `tick`（别名 `tick-participate`）：步进 `block_ticks`/`fluid_ticks`，并对作物/甘蔗/草等做近似 random-tick 生长（生长变更可 undo）。**不是**完整服务端行为（无光照/湿度校验、无到期 tick 的完整方块逻辑）
 
 `--dim`：`overworld` / `nether` / `end`。

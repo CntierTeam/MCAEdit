@@ -30,7 +30,7 @@ Brush：`--at` + `--radius`（柱再加 `--height`）。
 | **结构 `.nbt`** | `structure list\|info\|place\|export\|import\|clear-refs`（`--rotation` / `--mirror`） |
 | **新建世界 / level.dat** | `world create`；`level info\|write\|patch`；`session create --bootstrap` |
 | 地形 gen | `edit gen --seed --dim --from/--to` |
-| 重光照 | `edit fix-light` |
+| 重光照 | `edit fix-light`（只改 light / isLightOn；不 gen、不改方块） |
 | **离线 tick** | `edit tick`（别名 `tick-participate`） |
 | 离线截图 | `view screenshot --from/--to [--out] [--width] [--height] [--minecraft\|--assets-jar] [--no-textures]` |
 | **实时预览** | `view preview` / `preview`（`--watch`；需显示器；可贴图 jar） |

@@ -1178,8 +1178,8 @@ impl<'a> WorldView<'a> {
     /// approximate random-tick growth (crops / cane / grass). Growth mutations
     /// are undoable as one history entry.
     ///
-    /// Does **not** round-trip chunks through the terrain bridge (that path can
-    /// drop blocks). Use `edit gen` / `fix-light` for bridge features.
+    /// Does **not** round-trip chunks through pumpkin Level serialize (that path
+    /// can drop/shift blocks). Prefer this over `tick_participate` bridge.
     pub fn tick_offline(
         &mut self,
         from_cx: i32,

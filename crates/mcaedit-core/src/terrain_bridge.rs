@@ -134,36 +134,124 @@ pub fn generate_chunks(
     Ok(lines)
 }
 
-fn copy_level_into_proto(
-    level: &PumpkinChunk,
+fn resolve_mcaedit_block(
+    state: &crate::blockstate::BlockState,
+) -> Option<&'static BlockState> {
+    let key = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
+    let block = Block::from_name(&state.name).or_else(|| Block::from_registry_key(key))?;
+    if state.properties.is_empty() {
+        return Some(block.default_state);
+    }
+    let props: Vec<(&str, &str)> = state
+        .properties
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let state_id = block.from_properties(&props).to_state_id(block);
+    Some(BlockState::from_id(state_id))
+}
+
+/// Copy session work-copy blocks into a proto chunk for lighting only.
+/// Does **not** run worldgen; `seed`/`dim` only size the proto to the dimension.
+fn session_chunk_to_proto(
+    world: &WorldView<'_>,
+    cx: i32,
+    cz: i32,
     gen: &pumpkin_world::generation::generator::WorldGenerator,
-) -> pumpkin_world::ProtoChunk {
-    let mut proto = pumpkin_world::ProtoChunk::new(level.x, level.z, gen);
-    let min_y = level.section.min_y;
-    let height = (level.section.count as i32) * 16;
-    let base_x = level.x * 16;
-    let base_z = level.z * 16;
-    for y in min_y..(min_y + height) {
-        for z in 0..16usize {
-            for x in 0..16usize {
-                let id = level
-                    .section
-                    .get_block_absolute_y(x, y, z)
-                    .unwrap_or(Block::AIR.default_state.id);
-                if id == Block::AIR.default_state.id {
-                    continue;
+) -> Result<pumpkin_world::ProtoChunk> {
+    let mut proto = pumpkin_world::ProtoChunk::new(cx, cz, gen);
+    // Force lighting stage to run (initialize_light skips stage >= Lighting).
+    proto.stage = StagedChunkEnum::Features;
+
+    let region_dir = world.session.work_region_dir();
+    let (rx, rz) = region_coords(cx, cz);
+    let path = region_dir.join(region_file_name(rx, rz));
+    if !path.exists() {
+        return Ok(proto);
+    }
+    let store = RegionStore::open(&path);
+    let Some(_) = store.read_raw_chunk_nbt(cx, cz)? else {
+        return Ok(proto);
+    };
+
+    let chunk = world.load_chunk(cx, cz)?;
+    for sy in chunk.section_ys() {
+        let blocks = chunk.read_section_blocks(sy)?;
+        let base_y = (sy as i32) * 16;
+        for ly in 0..16u8 {
+            for lz in 0..16u8 {
+                for lx in 0..16u8 {
+                    let state = blocks.get(lx, ly, lz);
+                    if state.is_air_like() {
+                        continue;
+                    }
+                    let Some(ps) = resolve_mcaedit_block(state) else {
+                        continue;
+                    };
+                    proto.set_block_state(
+                        lx as i32,
+                        base_y + ly as i32,
+                        lz as i32,
+                        ps,
+                    );
                 }
-                let state = BlockState::from_id(id);
-                proto.set_block_state(base_x + x as i32, y, base_z + z as i32, state);
             }
         }
     }
-    // Force lighting stage to run (initialize_light skips stage >= Lighting).
-    proto.stage = StagedChunkEnum::Features;
-    proto
+    Ok(proto)
+}
+
+fn light_container_bytes(light: &pumpkin_world::chunk::format::LightContainer) -> Vec<u8> {
+    use pumpkin_world::chunk::format::LightContainer;
+    match light {
+        LightContainer::Full(data) => data.to_vec(),
+        LightContainer::Empty(default) => {
+            let packed = (*default & 0x0F) | ((*default & 0x0F) << 4);
+            vec![packed; LightContainer::ARRAY_SIZE]
+        }
+    }
+}
+
+/// Merge calculated light back into the session MCAEdit chunk without rewriting
+/// block palettes / block entities / status (kept `minecraft:full`).
+fn apply_light_to_session_chunk(
+    world: &mut WorldView<'_>,
+    cx: i32,
+    cz: i32,
+    proto: &pumpkin_world::ProtoChunk,
+) -> Result<()> {
+    let mut chunk = world.load_chunk(cx, cz)?;
+    let bottom = proto.bottom_y() as i32;
+    let section_count = proto.light.sky_light.len();
+
+    // Update light on every section that already has block data. Do not invent
+    // empty sections solely for light — that would bloat sparse MCAEdit chunks.
+    for sy in chunk.section_ys() {
+        let local_base = (sy as i32) * 16 - bottom;
+        if local_base < 0 {
+            continue;
+        }
+        let idx = (local_base / 16) as usize;
+        if idx >= section_count {
+            continue;
+        }
+        let block = light_container_bytes(&proto.light.block_light[idx]);
+        let sky = light_container_bytes(&proto.light.sky_light[idx]);
+        chunk.write_section_light(sy, &block, &sky)?;
+    }
+
+    chunk.set_light_on(true);
+    chunk.set_status_full();
+    world.save_chunk(&chunk)?;
+    Ok(())
 }
 
 /// Recalculate sky/block light for chunk AABB.
+///
+/// Preserves all block palettes, biomes, block entities, and other chunk NBT.
+/// Only section `BlockLight`/`SkyLight`, `isLightOn`, and `Status=minecraft:full`
+/// are written. Does **not** regenerate terrain (`--seed` only selects dimension
+/// extents for the lighting proto).
 pub fn fix_light(
     world: &mut WorldView<'_>,
     from_cx: i32,
@@ -175,7 +263,6 @@ pub fn fix_light(
 ) -> Result<Vec<String>> {
     let dimension = parse_dimension(dim)?;
     let gen = get_world_gen(Seed(seed), dimension.clone(), false, Vec::new(), String::new());
-    let region_dir = world.session.work_region_dir();
 
     let (min_cx, max_cx) = (from_cx.min(to_cx), from_cx.max(to_cx));
     let (min_cz, max_cz) = (from_cz.min(to_cz), from_cz.max(to_cz));
@@ -185,29 +272,21 @@ pub fn fix_light(
         for cx in min_cx..=max_cx {
             let radius = 1;
             let mut local = Cache::new(cx - radius, cz - radius, radius * 2 + 1);
-            for ddz in -radius..=radius {
-                for ddx in -radius..=radius {
+            // Cache indexes as dx * size + dz (x varies slowest).
+            for ddx in -radius..=radius {
+                for ddz in -radius..=radius {
                     let nx = cx + ddx;
                     let nz = cz + ddz;
-                    if let Some(level) = read_pumpkin_chunk(&region_dir, nx, nz)? {
-                        let proto = copy_level_into_proto(&level, &gen);
-                        local.chunks.push(Chunk::Proto(Box::new(proto)));
-                    } else {
-                        let mut proto = pumpkin_world::ProtoChunk::new(nx, nz, &gen);
-                        proto.stage = StagedChunkEnum::Features;
-                        local.chunks.push(Chunk::Proto(Box::new(proto)));
-                    }
+                    let proto = session_chunk_to_proto(world, nx, nz, &gen)?;
+                    local.chunks.push(Chunk::Proto(Box::new(proto)));
                 }
             }
             let mut engine = LightEngine::new();
             engine.initialize_light(&mut local, &LightingEngineConfig::Default);
-            // Mid index is center
             let mid = ((local.size * local.size) >> 1) as usize;
-            local.chunks[mid].upgrade_to_level_chunk(dimension, &LightingEngineConfig::Default);
-            let Chunk::Level(data) = &local.chunks[mid] else {
-                return Err(Error::msg("fix-light: upgrade failed"));
-            };
-            write_pumpkin_chunk(&region_dir, data)?;
+            local.chunks[mid].get_proto_chunk_mut().stage = StagedChunkEnum::Full;
+            let proto = local.chunks[mid].get_proto_chunk();
+            apply_light_to_session_chunk(world, cx, cz, proto)?;
             n += 1;
             lines.push(format!("fix-light chunk={cx},{cz}"));
         }

@@ -618,12 +618,13 @@ enum EditCmd {
         #[arg(long, help = "chunk x,z")]
         to: String,
     },
-    /// Recalculate sky/block light for chunk AABB
+    /// Recalculate sky/block light only (preserves blocks/palettes/entities)
     FixLight {
         #[arg(long, help = "chunk x,z")]
         from: String,
         #[arg(long, help = "chunk x,z")]
         to: String,
+        /// Dimension extents for the lighting proto only — does not regenerate terrain
         #[arg(long, default_value_t = 0)]
         seed: u64,
         #[arg(long, default_value = "overworld")]

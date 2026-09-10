@@ -94,7 +94,7 @@ mcaedit commit
 | 剪贴板 | `edit copy\|cut\|paste --at\|rotate --yaw\|flip --axis` |
 | 单方块 / section / 实体 | `edit set-block`；`set-section`；`edit entity spawn\|rm\|set` |
 | **地形生成** | `edit gen --seed N --dim overworld\|nether\|end --from cx,cz --to cx,cz` |
-| **修光照** | `edit fix-light --from cx,cz --to cx,cz [--seed] [--dim]` |
+| **修光照** | `edit fix-light --from cx,cz --to cx,cz [--seed] [--dim]`（只重算 sky/block light，**不**改方块/调色板；`--seed` 仅用于维度高度，不会 gen） |
 | **离线 tick** | `edit tick --from cx,cz --to cx,cz --rounds N --speed N`（别名 `tick-participate`） |
 | **离线截图** | `view screenshot --from x,y,z --to x,y,z [--out] [--width] [--height] [--camera] [--look] [--minecraft\|--assets-jar] [--no-textures]` |
 | **实时预览** | `view preview` / `preview`（`--from/--to` 可选，`--watch` 轮询 ms；`--minecraft` / `--assets-jar`；需显示器） |

@@ -3,6 +3,13 @@ use fastnbt::Value;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 
+#[derive(Clone, Copy)]
+enum NbtCtx {
+    Root,
+    /// Inside a chunk `sections` list entry (vanilla section `Y` is TAG_Byte).
+    Section,
+}
+
 pub fn nbt_to_json(value: Value) -> Result<JsonValue> {
     Ok(match value {
         Value::Byte(v) => JsonValue::from(v),
@@ -35,6 +42,36 @@ pub fn nbt_to_json(value: Value) -> Result<JsonValue> {
 }
 
 pub fn json_to_nbt(value: &JsonValue) -> Result<Value> {
+    json_to_nbt_ctx(NbtCtx::Root, None, value)
+}
+
+fn json_to_nbt_ctx(ctx: NbtCtx, key: Option<&str>, value: &JsonValue) -> Result<Value> {
+    // Vanilla section light is always TAG_ByteArray (2048 nibbles).
+    if matches!(key, Some("BlockLight") | Some("SkyLight")) {
+        if let JsonValue::Array(arr) = value {
+            let bytes: Vec<i8> = arr
+                .iter()
+                .map(|v| {
+                    let n = v
+                        .as_i64()
+                        .or_else(|| v.as_u64().map(|u| u as i64))
+                        .unwrap_or(0);
+                    n as i8
+                })
+                .collect();
+            return Ok(Value::ByteArray(fastnbt::ByteArray::new(bytes)));
+        }
+    }
+
+    // Vanilla section `Y` is TAG_Byte; MCAEdit JSON numbers would otherwise become TAG_Int
+    // and Pumpkin's get_byte("Y") would fall back to 0 (shifting blocks by 64).
+    if matches!(ctx, NbtCtx::Section) && key == Some("Y") {
+        if let JsonValue::Number(n) = value {
+            let i = n.as_i64().unwrap_or(0);
+            return Ok(Value::Byte(i as i8));
+        }
+    }
+
     Ok(match value {
         JsonValue::Null => Value::String(String::new()),
         JsonValue::Bool(b) => Value::Byte(if *b { 1 } else { 0 }),
@@ -53,6 +90,13 @@ pub fn json_to_nbt(value: &JsonValue) -> Result<Value> {
         }
         JsonValue::String(s) => Value::String(s.clone()),
         JsonValue::Array(arr) => {
+            if key == Some("sections") {
+                let list = arr
+                    .iter()
+                    .map(|v| json_to_nbt_ctx(NbtCtx::Section, None, v))
+                    .collect::<Result<Vec<_>>>()?;
+                return Ok(Value::List(list));
+            }
             if !arr.is_empty()
                 && arr
                     .iter()
@@ -64,13 +108,17 @@ pub fn json_to_nbt(value: &JsonValue) -> Result<Value> {
                     .collect();
                 Value::LongArray(fastnbt::LongArray::new(longs))
             } else {
-                Value::List(arr.iter().map(json_to_nbt).collect::<Result<Vec<_>>>()?)
+                Value::List(
+                    arr.iter()
+                        .map(|v| json_to_nbt_ctx(ctx, None, v))
+                        .collect::<Result<Vec<_>>>()?,
+                )
             }
         }
         JsonValue::Object(map) => {
             let mut compound = BTreeMap::new();
             for (k, v) in map {
-                compound.insert(k.clone(), json_to_nbt(v)?);
+                compound.insert(k.clone(), json_to_nbt_ctx(ctx, Some(k.as_str()), v)?);
             }
             Value::Compound(compound.into_iter().collect())
         }
