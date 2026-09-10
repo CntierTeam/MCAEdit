@@ -180,8 +180,19 @@ pub fn create_world(opts: &WorldCreateOptions) -> Result<LevelInfo> {
     info(world)
 }
 
+/// Ensure overworld (or named dim) region/entities/poi dirs exist without touching level.dat.
+pub fn ensure_world_dirs(world: &Path, dim: &str, format: RegionFormat) -> Result<()> {
+    let rel = match dim {
+        "overworld" | "." | "" => ".",
+        "nether" | "DIM-1" => "DIM-1",
+        "end" | "DIM1" => "DIM1",
+        other => other,
+    };
+    ensure_dim_dirs(world, rel, format)
+}
+
 /// Ensure region (+ entities) dirs exist; for Linear, leave empty (first write creates files).
-fn ensure_dim_dirs(world: &Path, rel: &str, format: RegionFormat) -> Result<()> {
+pub fn ensure_dim_dirs(world: &Path, rel: &str, format: RegionFormat) -> Result<()> {
     let base = if rel == "." {
         world.to_path_buf()
     } else {

@@ -86,6 +86,52 @@ fn session_bootstrap_empty_world() {
 }
 
 #[test]
+fn session_bootstrap_keeps_existing_level_dat() {
+    let tmp = TempDir::new().unwrap();
+    let world = tmp.path().join("existing");
+    let cwd = tmp.path().to_path_buf();
+    let created = level::create_world(&level::WorldCreateOptions {
+        path: world.clone(),
+        level_name: "KeepMe".into(),
+        seed: 12345,
+        version: ResolvedVersion::from_mc("26.2").unwrap(),
+        generator: GeneratorKind::Flat,
+        force: false,
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(created.level_name, "KeepMe");
+    let opts = CreateSessionOpts {
+        bootstrap: true,
+        force_level: false,
+        level_name: Some("ShouldNotApply".into()),
+        seed: Some(999),
+        version: Some(ResolvedVersion::from_mc("26.2").unwrap()),
+        generator: Some(GeneratorKind::Noise),
+        region_format: Some(level::RegionFormat::Anvil),
+        data_version: None,
+    };
+    let s = Session::create_with_opts(
+        &cwd,
+        &world,
+        "overworld",
+        Some("boot2".into()),
+        None,
+        opts,
+    )
+    .unwrap();
+    let info = level::info(&world).unwrap();
+    assert_eq!(info.level_name, "KeepMe");
+    assert_eq!(info.seed, Some(12345));
+    assert!(s
+        .bootstrap_note
+        .as_deref()
+        .unwrap_or("")
+        .contains("existing"));
+    assert_eq!(s.meta.data_version, Some(4903));
+}
+
+#[test]
 fn structure_place_undo_and_medium_stress() {
     let builder = std::thread::Builder::new()
         .name("structure-stress".into())

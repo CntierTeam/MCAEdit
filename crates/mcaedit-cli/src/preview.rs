@@ -27,6 +27,7 @@ pub struct PreviewOptions {
     pub minecraft: Option<PathBuf>,
     pub assets_jar: Option<PathBuf>,
     pub no_textures: bool,
+    pub max_cells: Option<usize>,
 }
 
 pub fn run_preview(opts: PreviewOptions) -> Result<()> {
@@ -121,7 +122,7 @@ impl PreviewApp {
         let mut atlas = atlas;
         let world = WorldView::new(&mut session);
         let mesh = world
-            .build_view_mesh_with_textures(from, to, atlas.as_mut())
+            .build_view_mesh_with_textures_limited(from, to, atlas.as_mut(), opts.max_cells)
             .context("initial mesh build")?;
         let (look, _cam) = default_camera_for_mesh(&mesh, None, None);
         let span = {
@@ -192,7 +193,12 @@ impl PreviewApp {
             self.to = t;
         }
         let world = WorldView::new(&mut session);
-        self.mesh = world.build_view_mesh_with_textures(self.from, self.to, self.atlas.as_mut())?;
+        self.mesh = world.build_view_mesh_with_textures_limited(
+            self.from,
+            self.to,
+            self.atlas.as_mut(),
+            self.opts.max_cells,
+        )?;
         let (look, _) = default_camera_for_mesh(&self.mesh, None, None);
         self.look = look;
         Ok(())
@@ -362,6 +368,7 @@ mod tests {
             minecraft: None,
             assets_jar: None,
             no_textures: false,
+            max_cells: None,
         };
         assert_eq!(opts.watch_ms, 400);
         assert!(opts.from.is_none());

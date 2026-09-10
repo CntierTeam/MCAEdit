@@ -53,6 +53,8 @@ pub struct Session {
     pub root: PathBuf,
     pub meta: SessionMeta,
     pub history: History,
+    /// One-shot note from `create --bootstrap` (not persisted).
+    pub bootstrap_note: Option<String>,
 }
 
 impl Session {
@@ -107,35 +109,54 @@ impl Session {
 
         let region_dir = dim_region_dir(&source_world, dim);
         let mut data_version = opts.data_version;
-        if (opts.bootstrap || crate::level::needs_bootstrap(&source_world))
-            && (!region_dir.exists() || opts.bootstrap)
-        {
-            let mut create = crate::level::WorldCreateOptions {
-                path: source_world.clone(),
-                level_name: opts.level_name.clone().unwrap_or_else(|| {
-                    source_world
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("world")
-                        .to_string()
-                }),
-                force: opts.force_level || !source_world.join("level.dat").exists(),
-                ..Default::default()
-            };
-            if let Some(seed) = opts.seed {
-                create.seed = seed;
+        let mut bootstrap_note: Option<String> = None;
+        let level_path = source_world.join("level.dat");
+        let want_skeleton = opts.bootstrap || crate::level::needs_bootstrap(&source_world);
+        if want_skeleton {
+            if level_path.exists() && !opts.force_level {
+                // --bootstrap with existing level.dat: ensure dirs only, never overwrite.
+                crate::level::ensure_world_dirs(
+                    &source_world,
+                    dim,
+                    opts.region_format
+                        .unwrap_or(crate::level::RegionFormat::Anvil),
+                )?;
+                if let Ok(info) = crate::level::info(&source_world) {
+                    data_version = data_version.or(info.data_version);
+                }
+                bootstrap_note = Some(format!(
+                    "bootstrap=existing level.dat={} (dirs ensured; not overwritten)",
+                    level_path.display()
+                ));
+            } else if !region_dir.exists() || opts.bootstrap {
+                let mut create = crate::level::WorldCreateOptions {
+                    path: source_world.clone(),
+                    level_name: opts.level_name.clone().unwrap_or_else(|| {
+                        source_world
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("world")
+                            .to_string()
+                    }),
+                    force: opts.force_level || !level_path.exists(),
+                    ..Default::default()
+                };
+                if let Some(seed) = opts.seed {
+                    create.seed = seed;
+                }
+                if let Some(v) = opts.version.clone() {
+                    create.version = v;
+                }
+                if let Some(g) = opts.generator {
+                    create.generator = g;
+                }
+                if let Some(fmt) = opts.region_format {
+                    create.region_format = fmt;
+                }
+                let info = crate::level::create_world(&create)?;
+                data_version = data_version.or(info.data_version);
+                bootstrap_note = Some("bootstrap=created level.dat + region skeleton".into());
             }
-            if let Some(v) = opts.version.clone() {
-                create.version = v;
-            }
-            if let Some(g) = opts.generator {
-                create.generator = g;
-            }
-            if let Some(fmt) = opts.region_format {
-                create.region_format = fmt;
-            }
-            let info = crate::level::create_world(&create)?;
-            data_version = data_version.or(info.data_version);
         }
         if !region_dir.exists() {
             return Err(Error::msg(format!(
@@ -174,6 +195,7 @@ impl Session {
             root,
             meta,
             history,
+            bootstrap_note,
         })
     }
 
@@ -185,6 +207,7 @@ impl Session {
             root,
             meta,
             history,
+            bootstrap_note: None,
         })
     }
 
@@ -373,7 +396,7 @@ impl CommitLock {
             let existing: WorldLock = serde_json::from_str(&fs::read_to_string(&path)?)?;
             if existing.session != session.meta.id && process_alive(existing.pid) {
                 return Err(Error::msg(format!(
-                    "world locked by session={} label={} pid={}",
+                    "world locked by session={} label={} pid={} (another agent is committing; retry after it finishes, or sync)",
                     existing.session,
                     existing.label.as_deref().unwrap_or("-"),
                     existing.pid
@@ -471,4 +494,194 @@ fn chrono_like_now() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("{secs}")
+}
+
+/// Soft AABB claim for multi-agent coordination (not a hard lock).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionLease {
+    pub session: String,
+    pub label: Option<String>,
+    pub from: [i32; 3],
+    pub to: [i32; 3],
+    pub updated_at: String,
+}
+
+impl RegionLease {
+    pub fn aabb(&self) -> (i32, i32, i32, i32, i32, i32) {
+        (
+            self.from[0].min(self.to[0]),
+            self.from[1].min(self.to[1]),
+            self.from[2].min(self.to[2]),
+            self.from[0].max(self.to[0]),
+            self.from[1].max(self.to[1]),
+            self.from[2].max(self.to[2]),
+        )
+    }
+
+    pub fn overlaps(&self, other: &RegionLease) -> bool {
+        let (ax0, ay0, az0, ax1, ay1, az1) = self.aabb();
+        let (bx0, by0, bz0, bx1, by1, bz1) = other.aabb();
+        ax0 <= bx1 && ax1 >= bx0 && ay0 <= by1 && ay1 >= by0 && az0 <= bz1 && az1 >= bz0
+    }
+}
+
+impl Session {
+    pub fn leases_dir(cwd: &Path) -> PathBuf {
+        Self::sessions_root(cwd).join("leases")
+    }
+
+    pub fn lease_path(cwd: &Path, session_id: &str) -> PathBuf {
+        Self::leases_dir(cwd).join(format!("{session_id}.json"))
+    }
+
+    /// Claim / refresh an AABB lease under `.mcaedit/leases/`.
+    pub fn set_lease(
+        cwd: &Path,
+        session: &Session,
+        from: [i32; 3],
+        to: [i32; 3],
+    ) -> Result<(RegionLease, Vec<String>)> {
+        let lease = RegionLease {
+            session: session.meta.id.clone(),
+            label: session.meta.label.clone(),
+            from,
+            to,
+            updated_at: chrono_like_now(),
+        };
+        let dir = Self::leases_dir(cwd);
+        fs::create_dir_all(&dir)?;
+        let warnings = list_lease_conflicts(cwd, &lease)?;
+        fs::write(
+            Self::lease_path(cwd, &session.meta.id),
+            serde_json::to_string_pretty(&lease)?,
+        )?;
+        Ok((lease, warnings))
+    }
+
+    pub fn clear_lease(cwd: &Path, session_id: &str) -> Result<bool> {
+        let p = Self::lease_path(cwd, session_id);
+        if p.exists() {
+            fs::remove_file(p)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn list_leases(cwd: &Path) -> Result<Vec<RegionLease>> {
+        let dir = Self::leases_dir(cwd);
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for e in fs::read_dir(dir)? {
+            let e = e?;
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(raw) = fs::read_to_string(&p) {
+                if let Ok(lease) = serde_json::from_str::<RegionLease>(&raw) {
+                    out.push(lease);
+                }
+            }
+        }
+        out.sort_by(|a, b| a.session.cmp(&b.session));
+        Ok(out)
+    }
+}
+
+pub fn list_lease_conflicts(cwd: &Path, mine: &RegionLease) -> Result<Vec<String>> {
+    let mut warnings = Vec::new();
+    for other in Session::list_leases(cwd)? {
+        if other.session == mine.session {
+            continue;
+        }
+        if mine.overlaps(&other) {
+            warnings.push(format!(
+                "lease conflict: session={} label={} aabb=({},{},{})..({},{},{}) overlaps ours",
+                other.session,
+                other.label.as_deref().unwrap_or("-"),
+                other.from[0],
+                other.from[1],
+                other.from[2],
+                other.to[0],
+                other.to[1],
+                other.to[2],
+            ));
+        }
+    }
+    Ok(warnings)
+}
+
+/// Warn when other sessions' work-region files share region names with ours and look newer.
+pub fn commit_conflict_hints(cwd: &Path, session: &Session) -> Result<Vec<String>> {
+    let mut hints = Vec::new();
+    let our_regions = match list_work_region_names(session) {
+        Ok(v) => v,
+        Err(_) => return Ok(hints),
+    };
+    if our_regions.is_empty() {
+        return Ok(hints);
+    }
+    for other in Session::list(cwd)? {
+        if other.id == session.meta.id {
+            continue;
+        }
+        let other_root = Session::path_for(cwd, &other.id);
+        let other_region = other_root.join("world/region");
+        if !other_region.exists() {
+            continue;
+        }
+        for name in &our_regions {
+            let ours = session.work_region_dir().join(name);
+            let theirs = other_region.join(name);
+            if !theirs.exists() || !ours.exists() {
+                continue;
+            }
+            let om = fs::metadata(&ours)?.modified().ok();
+            let tm = fs::metadata(&theirs)?.modified().ok();
+            if let (Some(o), Some(t)) = (om, tm) {
+                if t > o {
+                    hints.push(format!(
+                        "region conflict hint: {name} also dirty in session={} label={} (their mtime newer; sync/coordinate before commit)",
+                        other.id,
+                        other.label.as_deref().unwrap_or("-")
+                    ));
+                }
+            }
+        }
+    }
+    // Lease overlaps
+    if let Ok(Some(mine)) = read_own_lease(cwd, &session.meta.id) {
+        for w in list_lease_conflicts(cwd, &mine)? {
+            hints.push(w);
+        }
+    }
+    Ok(hints)
+}
+
+fn read_own_lease(cwd: &Path, id: &str) -> Result<Option<RegionLease>> {
+    let p = Session::lease_path(cwd, id);
+    if !p.exists() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::from_str(&fs::read_to_string(p)?)?))
+}
+
+fn list_work_region_names(session: &Session) -> Result<Vec<String>> {
+    let dir = session.work_region_dir();
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    for e in fs::read_dir(dir)? {
+        let e = e?;
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.ends_with(".mca") || name.ends_with(".linear") {
+            names.push(name.to_string());
+        }
+    }
+    Ok(names)
 }

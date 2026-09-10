@@ -25,6 +25,9 @@ pub fn commit_session(
     };
 
     let mut report = Vec::new();
+    for hint in crate::session::commit_conflict_hints(cwd, session)? {
+        report.push(format!("warn={hint}"));
+    }
     let pairs = [
         (
             session.work_region_dir(),

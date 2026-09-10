@@ -33,6 +33,7 @@ metadata:
 5. **所有**动作都要会代跑：`session` `inspect` `edit`（含 brush/mask/%pattern/smooth/smooth3d/biome/gen/fix-light/tick）`schem` `structure` `world` `level` `template` `view`/`preview` `history` `commit`。
 6. **永远用 session**：`--session <id>` 或 `export MCAEDIT_SESSION=<id>`。编辑只改工作副本；**`commit`** 才写回源世界。可先 `commit --dry-run`。
 7. 方块 AABB 用 `--from x,y,z --to x,y,z`；brush 用 `--at` + `--radius`；`gen` / `fix-light` / `tick` 用 **chunk** `--from x,z --to x,z`。
+   **负坐标**：`--from -8,60,-8`（空格）与 `--from=-8,60,-8`（`=`）均可；同理 `--to` / `--at` / `--near` / `--camera` / `--look`。
 8. `inspect select` 优先 ≤16³。多 agent：一人一 session label；他人 commit 后对本 session `session sync`。
 9. `minecraft:void_air`（set-section）= 保留；`replace --match air` / `--mask air` = air-like。`--pattern '50%stone,50%dirt'` 支持加权。破坏性 `discard` / 大范围 gen 意图不清时先确认一句。
 
@@ -48,7 +49,8 @@ mcaedit world create --path /tmp/oldworld --mc 1.18.2 --seed 1 --generator noise
 mcaedit level info --world /tmp/newworld
 mcaedit level patch --world /tmp/newworld --name Renamed --seed 99 --touch
 
-# 空世界可 --bootstrap（写 level.dat + region）
+# world create = 新建世界；session --bootstrap = 空目录补齐可用骨架（已有 level.dat 则复用，不覆盖）
+mcaedit world create --path /tmp/newworld --name Demo --mc 26.2
 mcaedit session create --world /tmp/newworld --id demo --label agent --bootstrap --mc 26.2
 export MCAEDIT_SESSION=demo
 
@@ -67,6 +69,10 @@ mcaedit inspect structures --cx 0 --cz 0
 mcaedit structure clear-refs --from 0,0,0 --to 63,0,63
 
 mcaedit view screenshot --from 0,64,0 --to 7,66,7 --out /tmp/shot.png --width 640 --height 360
+# 大体积验收（默认 max-cells=2e6；可用 --max-cells / MCAEDIT_VIEW_MAX_CELLS）
+mcaedit view screenshot --from=-10,55,-55 --to=45,100,12 --out /tmp/taihe.png \
+  --width 1600 --height 900 --camera=-28,105,-78 --look=16,78,-22 \
+  --minecraft /other/Minecraft/.minecraft/versions/26.2/26.2.jar
 # 使用本机 Minecraft 26.2 client jar 方块贴图（可省略，自动探测）
 mcaedit view screenshot --from 0,64,0 --to 7,66,7 --out /tmp/shot.png \
   --minecraft ~/.minecraft/versions/26.2/26.2.jar
@@ -82,7 +88,7 @@ mcaedit commit
 
 | 用户意图 | 执行 |
 |----------|------|
-| **新建世界 / level.dat** | `world create`；`level info\|write\|patch`；`session create --bootstrap` |
+| **新建世界 / level.dat** | `world create` = 新世界；`session create --bootstrap` = 缺啥补啥（已有 level.dat 则复用）；`level info\|write\|patch` |
 | 开 / 列 / 状态 / 同步 / 丢弃 session | `session create\|list\|status\|sync [--force]\|discard` |
 | 看区块 / 方块 / ASCII 选区 / 实体 / 结构引用 | `inspect summary\|get\|slice\|select\|palette\|entities\|structures` |
 | 填方 / 替换 / 墙 / 外框 / 挖空 / 覆盖 | `edit fill\|replace\|walls\|outline\|hollow\|overlay`（fill/replace 支持 `--pattern` / `--mask`） |
@@ -144,9 +150,22 @@ mcaedit view preview --assets-jar ~/.minecraft/versions/26.2/26.2.jar
 # 强制纯色：--no-textures
 ```
 
-自动探测路径（版本默认 **26.2**）：`~/.minecraft/versions/26.2/26.2.jar`、Flatpak Mojang、Prism/PolyMC/MultiMC instances、`%APPDATA%/.minecraft/...`、HMCL 等。`--minecraft` 可指向 jar 或 `versions/26.2/` 目录。
+自动探测路径（版本默认 **26.2**）：`/other/Minecraft/.minecraft/versions/26.2/26.2.jar`（buildTest 机）、`~/.minecraft/versions/26.2/26.2.jar`、Flatpak Mojang、Prism/PolyMC/MultiMC、`%APPDATA%/.minecraft/...`、HMCL 等。`--minecraft` 可指向 jar 或 `versions/26.2/` 目录。
+环境变量：`MCAEDIT_MINECRAFT_JAR` / `MCAEDIT_ASSETS_JAR`；大截图体积：`MCAEDIT_VIEW_MAX_CELLS`（默认 2000000）。
+日志：`textures=jar path=...` 或 `textures=palette reason=no-textures|jar-not-found|...`。
 
 v1 限制：立方体贴图 + face-cull，**无完整 block model**（台阶/栏杆/十字植物等仍按整方块或回退实色）；动画贴图只用首帧；光照为原版六面明暗阶梯（顶>南北>东西>底）× 全日空 lightmap，screenshot/preview 共用，无邻域 AO。
+
+## 建造助手（柱网 / 瓦垄 / 楼梯）
+
+```bash
+# 柱网：AABB 内按 spacing 立柱（可 undo）
+mcaedit edit grid --from 0,64,0 --to 31,72,31 --spacing-x 4 --spacing-z 4 --block minecraft:oak_log
+# 瓦垄：沿 axis 每隔 period 一行瓦；奇数行可选楼梯朝向
+mcaedit edit roof-rows --from 0,80,0 --to 31,80,31 --axis z --period 2 \
+  --block minecraft:brick_slab --stairs minecraft:brick_stairs --stairs-facing north
+mcaedit edit stairs --from 0,64,0 --to 7,64,0 --block minecraft:oak_stairs --facing east --half bottom
+```
 
 ## Linear region
 
@@ -177,8 +196,9 @@ Session 可打开仅含 `r.X.Z.linear`（v1/v2）的世界：工作副本自动�
 ```bash
 mcaedit session create --world /path/to/world --id alice --label agent-a
 mcaedit session create --world /path/to/world --id bob --label agent-b
+mcaedit --session alice session lease --from -32,60,-32 --to 32,90,32
 mcaedit --session alice edit set-block --x 0 --y 64 --z 0 --block minecraft:stone
-mcaedit --session alice commit
+mcaedit --session alice commit   # 会 warn 重叠 lease / 同 region 较新 mtime
 mcaedit --session bob session sync
 ```
 

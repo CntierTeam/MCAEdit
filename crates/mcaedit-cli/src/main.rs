@@ -82,9 +82,9 @@ enum Commands {
     },
     /// Live 3D preview window (alias of `view preview`)
     Preview {
-        #[arg(long, help = "x,y,z focus AABB min (default: auto from work region)")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z focus AABB min (default: auto from work region)")]
         from: Option<String>,
-        #[arg(long, help = "x,y,z focus AABB max")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z focus AABB max")]
         to: Option<String>,
         /// Poll interval for session work-region reload (milliseconds)
         #[arg(long, default_value_t = 400)]
@@ -102,6 +102,9 @@ enum Commands {
         /// Force solid palette colors (skip jar textures)
         #[arg(long)]
         no_textures: bool,
+        /// Max AABB cells for mesh (default 2e6 / env MCAEDIT_VIEW_MAX_CELLS)
+        #[arg(long = "max-cells", env = "MCAEDIT_VIEW_MAX_CELLS")]
+        max_cells: Option<usize>,
     },
     /// Write working copy MCA files back to the source world
     Commit {
@@ -116,9 +119,9 @@ enum TemplateCmd {
     Save {
         #[arg(long)]
         name: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
     },
     List,
@@ -130,7 +133,7 @@ enum TemplateCmd {
     Paste {
         #[arg(long)]
         name: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         at: String,
     },
     Rm {
@@ -157,9 +160,9 @@ enum TemplateCmd {
 enum SchemCmd {
     /// Export AABB to .schem (Sponge v2)
     Export {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long)]
         out: PathBuf,
@@ -168,7 +171,7 @@ enum SchemCmd {
     Import {
         #[arg(long)]
         file: PathBuf,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         at: String,
     },
     /// Show .schem metadata
@@ -194,7 +197,7 @@ enum StructureCmd {
     Place {
         #[arg(long)]
         file: PathBuf,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         at: String,
         /// Rotate yaw degrees: 0/90/180/270
         #[arg(long, default_value_t = 0)]
@@ -208,9 +211,9 @@ enum StructureCmd {
     },
     /// Export AABB to vanilla structure .nbt
     Export {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long)]
         out: PathBuf,
@@ -226,9 +229,9 @@ enum StructureCmd {
     },
     /// Clear chunk structure starts/references overlapping AABB
     ClearRefs {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long = "no-starts")]
         no_starts: bool,
@@ -247,7 +250,7 @@ enum WorldCmd {
         level_name: String,
         #[arg(long, default_value_t = 0)]
         seed: i64,
-        #[arg(long, help = "x,y,z", default_value = "0,64,0")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z", default_value = "0,64,0")]
         spawn: String,
         /// 0=survival 1=creative 2=adventure 3=spectator
         #[arg(long = "game-type", default_value_t = 1)]
@@ -285,7 +288,7 @@ enum LevelCmd {
         level_name: Option<String>,
         #[arg(long)]
         seed: Option<i64>,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         spawn: Option<String>,
         #[arg(long = "game-type")]
         game_type: Option<i32>,
@@ -306,7 +309,7 @@ enum LevelCmd {
         level_name: Option<String>,
         #[arg(long)]
         seed: Option<i64>,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         spawn: Option<String>,
         #[arg(long = "game-type")]
         game_type: Option<i32>,
@@ -359,6 +362,19 @@ enum SessionCmd {
         force: bool,
     },
     Discard,
+    /// Claim soft AABB lease for multi-session coordination
+    Lease {
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
+        from: String,
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
+        to: String,
+    },
+    /// Clear this session lease
+    #[command(name = "lease-clear")]
+    LeaseClear,
+    /// List all soft leases
+    #[command(name = "lease-list")]
+    LeaseList,
 }
 
 #[derive(Subcommand, Debug)]
@@ -380,16 +396,24 @@ enum InspectCmd {
     Slice {
         #[arg(long)]
         y: i32,
-        #[arg(long, help = "x,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,z")]
         from: String,
-        #[arg(long, help = "x,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,z")]
         to: String,
     },
     /// AABB select → palette rebuild + ASCII 3D (ids)
     Select {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
+        to: String,
+    },
+    /// Large AABB block counts (no ASCII); for 验收
+    #[command(name = "summary-box")]
+    SummaryBox {
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
+        from: String,
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
     },
     Palette {
@@ -401,7 +425,7 @@ enum InspectCmd {
         sy: i8,
     },
     Entities {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         near: Option<String>,
         #[arg(long, default_value_t = 32.0)]
         r: f64,
@@ -428,9 +452,9 @@ enum EditCmd {
         block: String,
     },
     Fill {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         /// Block or % pattern (e.g. minecraft:stone or 50%stone,50%dirt)
         #[arg(long)]
@@ -445,9 +469,9 @@ enum EditCmd {
     },
     /// Replace matching blocks in AABB (`--match air` = air-like; `--with` may be % pattern)
     Replace {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long = "match", help = "mask / block filter")]
         match_block: Option<String>,
@@ -461,37 +485,37 @@ enum EditCmd {
         pattern: Option<String>,
     },
     Walls {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long)]
         block: String,
     },
     Outline {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long)]
         block: String,
     },
     Hollow {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
     },
     Overlay {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long)]
         block: String,
     },
     Sphere {
-        #[arg(long, help = "x,y,z center")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z center")]
         at: String,
         #[arg(long)]
         radius: f64,
@@ -501,7 +525,7 @@ enum EditCmd {
         hollow: bool,
     },
     Cyl {
-        #[arg(long, help = "x,z center")]
+        #[arg(long, allow_hyphen_values = true, help = "x,z center")]
         at: String,
         #[arg(long)]
         y: i32,
@@ -515,9 +539,9 @@ enum EditCmd {
         hollow: bool,
     },
     Stack {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long, default_value_t = 1)]
         n: i32,
@@ -529,9 +553,9 @@ enum EditCmd {
         dz: i32,
     },
     Move {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long, default_value_t = 0)]
         dx: i32,
@@ -541,19 +565,19 @@ enum EditCmd {
         dz: i32,
     },
     Copy {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
     },
     Cut {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
     },
     Paste {
-        #[arg(long, help = "x,y,z origin")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z origin")]
         at: String,
     },
     /// Rotate session clipboard yaw (90/180/270)
@@ -573,9 +597,9 @@ enum EditCmd {
     },
     /// Heightmap / surface smooth over AABB
     Smooth {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long, default_value_t = 1)]
         iterations: u32,
@@ -585,9 +609,9 @@ enum EditCmd {
     },
     /// 3D voxel neighbourhood smooth (majority vote) over AABB
     Smooth3d {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long, default_value_t = 1)]
         iterations: u32,
@@ -600,9 +624,9 @@ enum EditCmd {
     },
     /// Paint biomes in AABB (4×4×4 resolution per section)
     Biome {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long, help = "minecraft:plains or plains")]
         biome: String,
@@ -613,16 +637,16 @@ enum EditCmd {
         seed: u64,
         #[arg(long, default_value = "overworld")]
         dim: String,
-        #[arg(long, help = "chunk x,z")]
+        #[arg(long, allow_hyphen_values = true, help = "chunk x,z")]
         from: String,
-        #[arg(long, help = "chunk x,z")]
+        #[arg(long, allow_hyphen_values = true, help = "chunk x,z")]
         to: String,
     },
     /// Recalculate sky/block light only (preserves blocks/palettes/entities)
     FixLight {
-        #[arg(long, help = "chunk x,z")]
+        #[arg(long, allow_hyphen_values = true, help = "chunk x,z")]
         from: String,
-        #[arg(long, help = "chunk x,z")]
+        #[arg(long, allow_hyphen_values = true, help = "chunk x,z")]
         to: String,
         /// Dimension extents for the lighting proto only — does not regenerate terrain
         #[arg(long, default_value_t = 0)]
@@ -633,14 +657,65 @@ enum EditCmd {
     /// Offline tick: scheduled queues + approximate random-tick growth
     #[command(name = "tick", alias = "tick-participate")]
     Tick {
-        #[arg(long, help = "chunk x,z")]
+        #[arg(long, allow_hyphen_values = true, help = "chunk x,z")]
         from: String,
-        #[arg(long, help = "chunk x,z")]
+        #[arg(long, allow_hyphen_values = true, help = "chunk x,z")]
         to: String,
         #[arg(long, default_value_t = 1)]
         rounds: u32,
         #[arg(long, default_value_t = 3)]
         speed: u32,
+    },
+    /// Pillar grid / 柱网 inside AABB
+    #[command(name = "grid", alias = "colonnade")]
+    Grid {
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
+        from: String,
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
+        to: String,
+        #[arg(long = "spacing-x", default_value_t = 4)]
+        spacing_x: i32,
+        #[arg(long = "spacing-z", default_value_t = 4)]
+        spacing_z: i32,
+        #[arg(long)]
+        block: Option<String>,
+        #[arg(long)]
+        pattern: Option<String>,
+    },
+    /// Roof tile rows / 瓦垄
+    #[command(name = "roof-rows")]
+    RoofRows {
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
+        from: String,
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
+        to: String,
+        #[arg(long, default_value = "z", help = "row axis x|z")]
+        axis: String,
+        #[arg(long, default_value_t = 2)]
+        period: i32,
+        #[arg(long)]
+        block: String,
+        #[arg(long, help = "optional stairs block for odd rows")]
+        stairs: Option<String>,
+        #[arg(long = "stairs-facing", default_value = "north")]
+        stairs_facing: String,
+        #[arg(long = "stairs-half", default_value = "bottom")]
+        stairs_half: String,
+    },
+    /// Fill AABB with oriented stairs
+    Stairs {
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
+        from: String,
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
+        to: String,
+        #[arg(long)]
+        block: String,
+        #[arg(long, default_value = "north")]
+        facing: String,
+        #[arg(long, default_value = "bottom")]
+        half: String,
+        #[arg(long, default_value = "straight")]
+        shape: String,
     },
     SetSection {
         #[arg(long)]
@@ -663,7 +738,7 @@ enum EditCmd {
 enum BrushCmd {
     /// Sphere brush at center
     Sphere {
-        #[arg(long, help = "x,y,z center")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z center")]
         at: String,
         #[arg(long)]
         radius: f64,
@@ -680,7 +755,7 @@ enum BrushCmd {
     },
     /// Vertical cylinder brush
     Cyl {
-        #[arg(long, help = "x,z center")]
+        #[arg(long, allow_hyphen_values = true, help = "x,z center")]
         at: String,
         #[arg(long)]
         y: i32,
@@ -701,7 +776,7 @@ enum BrushCmd {
     },
     /// Paste clipboard at point; optional sphere clip + mask
     Clipboard {
-        #[arg(long, help = "x,y,z origin")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z origin")]
         at: String,
         #[arg(long)]
         radius: Option<f64>,
@@ -712,7 +787,7 @@ enum BrushCmd {
     },
     /// Biome sphere brush (world-space shape, 4×4×4 cells)
     Biome {
-        #[arg(long, help = "x,y,z center")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z center")]
         at: String,
         #[arg(long)]
         radius: f64,
@@ -728,7 +803,7 @@ enum BrushCmd {
     /// Biome vertical cylinder brush
     #[command(name = "biome-cyl")]
     BiomeCyl {
-        #[arg(long, help = "x,z center")]
+        #[arg(long, allow_hyphen_values = true, help = "x,z center")]
         at: String,
         #[arg(long)]
         y: i32,
@@ -795,9 +870,9 @@ enum HistoryCmd {
 enum ViewCmd {
     /// Offline 3D screenshot for LLM vision (PNG)
     Screenshot {
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
-        #[arg(long, help = "x,y,z")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         to: String,
         #[arg(long)]
         out: Option<PathBuf>,
@@ -805,9 +880,9 @@ enum ViewCmd {
         width: u32,
         #[arg(long, default_value_t = 720)]
         height: u32,
-        #[arg(long, help = "x,y,z camera position")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z camera position")]
         camera: Option<String>,
-        #[arg(long, help = "x,y,z look target")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z look target")]
         look: Option<String>,
         /// Minecraft client jar or versions/<ver> directory (default: auto-detect 26.2)
         #[arg(long, env = "MCAEDIT_MINECRAFT_JAR")]
@@ -818,12 +893,15 @@ enum ViewCmd {
         /// Force solid palette colors (skip jar textures)
         #[arg(long)]
         no_textures: bool,
+        /// Max AABB cells for mesh (default 2e6 / env MCAEDIT_VIEW_MAX_CELLS)
+        #[arg(long = "max-cells", env = "MCAEDIT_VIEW_MAX_CELLS")]
+        max_cells: Option<usize>,
     },
     /// Live native preview window (watch session work copy)
     Preview {
-        #[arg(long, help = "x,y,z focus AABB min (default: auto from work region)")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z focus AABB min (default: auto from work region)")]
         from: Option<String>,
-        #[arg(long, help = "x,y,z focus AABB max")]
+        #[arg(long, allow_hyphen_values = true, help = "x,y,z focus AABB max")]
         to: Option<String>,
         /// Poll interval for session work-region reload (milliseconds)
         #[arg(long, default_value_t = 400)]
@@ -841,6 +919,9 @@ enum ViewCmd {
         /// Force solid palette colors (skip jar textures)
         #[arg(long)]
         no_textures: bool,
+        /// Max AABB cells for mesh (default 2e6 / env MCAEDIT_VIEW_MAX_CELLS)
+        #[arg(long = "max-cells", env = "MCAEDIT_VIEW_MAX_CELLS")]
+        max_cells: Option<usize>,
     },
 }
 
@@ -923,6 +1004,9 @@ fn run() -> Result<()> {
                     data_version,
                 };
                 let s = Session::create_with_opts(&cwd, &world, &dim, id, label, opts)?;
+                if let Some(note) = &s.bootstrap_note {
+                    println!("{note}");
+                }
                 print_session(&s, cli.json);
             }
             SessionCmd::List => {
@@ -961,6 +1045,49 @@ fn run() -> Result<()> {
                 s.discard()?;
                 println!("discarded={id}");
             }
+            SessionCmd::Lease { from, to } => {
+                let s = open_session(&cwd, cli.session.as_deref())?;
+                let (x1, y1, z1) = parse_xyz_i(&from)?;
+                let (x2, y2, z2) = parse_xyz_i(&to)?;
+                let (lease, warnings) =
+                    Session::set_lease(&cwd, &s, [x1, y1, z1], [x2, y2, z2])?;
+                for w in warnings {
+                    println!("warn={w}");
+                }
+                println!(
+                    "lease=ok session={} from={},{},{} to={},{},{}",
+                    lease.session,
+                    lease.from[0],
+                    lease.from[1],
+                    lease.from[2],
+                    lease.to[0],
+                    lease.to[1],
+                    lease.to[2]
+                );
+            }
+            SessionCmd::LeaseClear => {
+                let s = open_session(&cwd, cli.session.as_deref())?;
+                let cleared = Session::clear_lease(&cwd, &s.meta.id)?;
+                println!("lease_cleared={cleared}");
+            }
+            SessionCmd::LeaseList => {
+                let list = Session::list_leases(&cwd)?;
+                println!("leases n={}", list.len());
+                for lease in list {
+                    println!(
+                        "session={} label={} from={},{},{} to={},{},{} updated={}",
+                        lease.session,
+                        lease.label.as_deref().unwrap_or("-"),
+                        lease.from[0],
+                        lease.from[1],
+                        lease.from[2],
+                        lease.to[0],
+                        lease.to[1],
+                        lease.to[2],
+                        lease.updated_at
+                    );
+                }
+            }
         },
         Commands::Inspect { cmd } => {
             let mut s = open_session(&cwd, cli.session.as_deref())?;
@@ -991,6 +1118,13 @@ fn run() -> Result<()> {
                     let (x1, y1, z1) = parse_xyz_i(&from)?;
                     let (x2, y2, z2) = parse_xyz_i(&to)?;
                     for line in world.select_box(x1, y1, z1, x2, y2, z2)? {
+                        println!("{line}");
+                    }
+                }
+                InspectCmd::SummaryBox { from, to } => {
+                    let (x1, y1, z1) = parse_xyz_i(&from)?;
+                    let (x2, y2, z2) = parse_xyz_i(&to)?;
+                    for line in world.summary_box(x1, y1, z1, x2, y2, z2)? {
                         println!("{line}");
                     }
                 }
@@ -1386,6 +1520,85 @@ fn run() -> Result<()> {
                             let (x2, y2, z2) = parse_xyz_i(&to)?;
                             world.biome_paint(x1, y1, z1, x2, y2, z2, &biome)?
                         }
+                        EditCmd::Grid {
+                            from,
+                            to,
+                            spacing_x,
+                            spacing_z,
+                            block,
+                            pattern,
+                        } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            let pattern = parse_pattern_arg(pattern.as_deref(), block.as_deref())?;
+                            mcaedit_core::build_ops::grid_columns(
+                                &mut world,
+                                x1,
+                                y1,
+                                z1,
+                                x2,
+                                y2,
+                                z2,
+                                spacing_x,
+                                spacing_z,
+                                pattern,
+                            )?
+                        }
+                        EditCmd::RoofRows {
+                            from,
+                            to,
+                            axis,
+                            period,
+                            block,
+                            stairs,
+                            stairs_facing,
+                            stairs_half,
+                        } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            let block =
+                                BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
+                            let stairs = stairs
+                                .as_deref()
+                                .map(BlockState::parse)
+                                .transpose()
+                                .map_err(|e| anyhow::anyhow!(e))?;
+                            let axis = axis
+                                .chars()
+                                .next()
+                                .ok_or_else(|| anyhow::anyhow!("--axis required"))?;
+                            mcaedit_core::build_ops::roof_rows(
+                                &mut world,
+                                x1,
+                                y1,
+                                z1,
+                                x2,
+                                y2,
+                                z2,
+                                axis,
+                                period,
+                                block,
+                                stairs,
+                                &stairs_facing,
+                                &stairs_half,
+                            )?
+                        }
+                        EditCmd::Stairs {
+                            from,
+                            to,
+                            block,
+                            facing,
+                            half,
+                            shape,
+                        } => {
+                            let (x1, y1, z1) = parse_xyz_i(&from)?;
+                            let (x2, y2, z2) = parse_xyz_i(&to)?;
+                            let block =
+                                BlockState::parse(&block).map_err(|e| anyhow::anyhow!(e))?;
+                            mcaedit_core::build_ops::stairs_fill(
+                                &mut world, x1, y1, z1, x2, y2, z2, block, &facing, &half, &shape,
+                            )?
+                        }
                         EditCmd::SetSection {
                             cx,
                             cy,
@@ -1427,6 +1640,7 @@ fn run() -> Result<()> {
                         | EditCmd::Gen { .. }
                         | EditCmd::FixLight { .. }
                         | EditCmd::Tick { .. } => unreachable!(),
+                        // Grid/RoofRows/Stairs handled above
                     };
                     if cli.json {
                         println!("{}", serde_json::to_string(&action)?);
@@ -1881,6 +2095,7 @@ fn run() -> Result<()> {
                     minecraft,
                     assets_jar,
                     no_textures,
+                    max_cells,
                 } => {
                     let world = WorldView::new(&mut s);
                     let (x1, y1, z1) = parse_xyz_i(&from)?;
@@ -1902,6 +2117,7 @@ fn run() -> Result<()> {
                         minecraft,
                         assets_jar,
                         no_textures,
+                        max_cells,
                     };
                     let rep = world.view_screenshot(&req)?;
                     println!(
@@ -1924,6 +2140,7 @@ fn run() -> Result<()> {
                     minecraft,
                     assets_jar,
                     no_textures,
+                    max_cells,
                 } => {
                     run_preview_cmd(
                         &cwd,
@@ -1937,6 +2154,7 @@ fn run() -> Result<()> {
                             minecraft,
                             assets_jar,
                             no_textures,
+                            max_cells,
                         },
                     )?;
                 }
@@ -1951,6 +2169,7 @@ fn run() -> Result<()> {
             minecraft,
             assets_jar,
             no_textures,
+            max_cells,
         } => {
             let s = open_session(&cwd, cli.session.as_deref())?;
             run_preview_cmd(
@@ -1965,6 +2184,7 @@ fn run() -> Result<()> {
                     minecraft,
                     assets_jar,
                     no_textures,
+                    max_cells,
                 },
             )?;
         }
@@ -2000,6 +2220,7 @@ struct PreviewLaunch {
     minecraft: Option<PathBuf>,
     assets_jar: Option<PathBuf>,
     no_textures: bool,
+    max_cells: Option<usize>,
 }
 
 fn run_preview_cmd(cwd: &std::path::Path, session: &Session, launch: PreviewLaunch) -> Result<()> {
@@ -2049,6 +2270,7 @@ fn run_preview_cmd(cwd: &std::path::Path, session: &Session, launch: PreviewLaun
             minecraft: launch.minecraft,
             assets_jar: launch.assets_jar,
             no_textures: launch.no_textures,
+            max_cells: launch.max_cells,
         })?;
         Ok(())
     }
@@ -2060,6 +2282,9 @@ fn print_session(s: &Session, json: bool) {
     } else {
         for line in s.status_lines() {
             println!("{line}");
+        }
+        if let Some(note) = &s.bootstrap_note {
+            println!("{note}");
         }
     }
 }
@@ -2156,4 +2381,57 @@ fn parse_mask_opt(
         mcaedit_core::Mask::with_exclude(base, mask_exclude)
             .map_err(|e| anyhow::anyhow!(e))?,
     ))
+}
+
+#[cfg(test)]
+mod clap_coord_tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn accepts_negative_from_with_space() {
+        let cli = Cli::try_parse_from([
+            "mcaedit",
+            "edit",
+            "fill",
+            "--from",
+            "-8,60,-8",
+            "--to",
+            "8,62,8",
+            "--block",
+            "minecraft:stone",
+        ]);
+        assert!(cli.is_ok(), "{cli:?}");
+    }
+
+    #[test]
+    fn accepts_negative_from_equals_form() {
+        let cli = Cli::try_parse_from([
+            "mcaedit",
+            "view",
+            "screenshot",
+            "--from=-10,55,-55",
+            "--to=45,100,12",
+            "--camera",
+            "-28,105,-78",
+            "--look=16,78,-22",
+            "--out",
+            "/tmp/x.png",
+        ]);
+        assert!(cli.is_ok(), "{cli:?}");
+    }
+
+    #[test]
+    fn accepts_negative_chunk_xz_for_fix_light() {
+        let cli = Cli::try_parse_from([
+            "mcaedit",
+            "edit",
+            "fix-light",
+            "--from",
+            "-2,-2",
+            "--to",
+            "1,1",
+        ]);
+        assert!(cli.is_ok(), "{cli:?}");
+    }
 }

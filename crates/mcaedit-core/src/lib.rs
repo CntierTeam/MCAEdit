@@ -2,6 +2,7 @@
 
 pub mod assets;
 pub mod action;
+pub mod build_ops;
 pub mod bitstorage;
 pub mod blockstate;
 pub mod chunk;
@@ -35,6 +36,6 @@ pub use mask::Mask;
 pub use ops::Aabb;
 pub use palette::SectionDiff;
 pub use pattern::Pattern;
-pub use session::{CommitLock, CreateSessionOpts, Session, SessionSummary};
+pub use session::{CommitLock, CreateSessionOpts, RegionLease, Session, SessionSummary};
 pub use template::Template;
 pub use world::WorldView;

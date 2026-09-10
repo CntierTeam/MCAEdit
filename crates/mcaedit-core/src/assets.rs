@@ -16,7 +16,7 @@ pub const DEFAULT_MC_VERSION: &str = "26.2";
 const BLOCK_TEX_PREFIX: &str = "assets/minecraft/textures/block/";
 
 /// Face of a unit cube (world axes).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CubeFace {
     NegX,
     PosX,
@@ -282,6 +282,10 @@ fn home_dir() -> Option<PathBuf> {
 pub fn candidate_jar_paths(version: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let rel = format!("versions/{version}/{version}.jar");
+    // buildTest / shared Minecraft layout on this fleet
+    out.push(PathBuf::from(format!("/other/Minecraft/.minecraft/{rel}")));
+    out.push(PathBuf::from(format!("/other/Minecraft/minecraft/{rel}")));
+    out.push(PathBuf::from(format!("/Minecraft/.minecraft/{rel}")));
     if let Some(home) = home_dir() {
         out.push(home.join(".minecraft").join(&rel));
         out.push(

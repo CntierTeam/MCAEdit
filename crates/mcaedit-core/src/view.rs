@@ -12,8 +12,24 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// Max AABB edge volume for offline mesh builds (screenshot + preview).
-pub const VIEW_MAX_CELLS: usize = 48 * 48 * 48;
+/// Default max AABB cell count for offline mesh builds (screenshot + preview).
+/// Overridable via `MCAEDIT_VIEW_MAX_CELLS` / `--max-cells` (Taihe-scale ~175k needs ≫ 48³).
+pub const VIEW_MAX_CELLS_DEFAULT: usize = 2_000_000;
+
+/// Backward-compatible alias (historical 48³ hard limit removed).
+pub const VIEW_MAX_CELLS: usize = VIEW_MAX_CELLS_DEFAULT;
+
+/// Resolve max cells: explicit arg → env → default.
+pub fn resolve_view_max_cells(explicit: Option<usize>) -> usize {
+    if let Some(n) = explicit.filter(|n| *n > 0) {
+        return n;
+    }
+    std::env::var("MCAEDIT_VIEW_MAX_CELLS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(VIEW_MAX_CELLS_DEFAULT)
+}
 
 #[derive(Clone, Debug)]
 pub struct ViewScreenshotRequest {
@@ -30,6 +46,8 @@ pub struct ViewScreenshotRequest {
     pub assets_jar: Option<PathBuf>,
     /// When true, skip jar lookup (palette colors only).
     pub no_textures: bool,
+    /// Cap AABB volume; `None` → env / default.
+    pub max_cells: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -40,7 +58,7 @@ pub struct ViewScreenshotResult {
     pub blocks: usize,
     pub faces: usize,
     pub triangles: usize,
-    /// `"palette"` or absolute jar path used for textures.
+    /// `jar path=...` or `palette reason=...`.
     pub textures: String,
 }
 
@@ -102,7 +120,12 @@ impl<'a> WorldView<'a> {
         }
         let (mut atlas, textures_label) =
             resolve_atlas_cli(req.minecraft.as_deref(), req.assets_jar.as_deref(), req.no_textures);
-        let mesh = self.build_view_mesh_with_textures(req.from, req.to, atlas.as_mut())?;
+        let mesh = self.build_view_mesh_with_textures_limited(
+            req.from,
+            req.to,
+            atlas.as_mut(),
+            req.max_cells,
+        )?;
         let (look, camera) = default_camera_for_mesh(&mesh, req.look, req.camera);
         let frame = rasterize_view_mesh(&mesh, req.width, req.height, camera, look);
         if let Some(parent) = req.out.parent() {
@@ -122,13 +145,13 @@ impl<'a> WorldView<'a> {
         })
     }
 
-    /// Build a face-culled cube mesh for an AABB (shared by screenshot + preview).
+    /// Build a face-culled cube mesh for an AABB (shared by screenshot and live preview).
     pub fn build_view_mesh(
         &self,
         from: (i32, i32, i32),
         to: (i32, i32, i32),
     ) -> Result<ViewMesh> {
-        self.build_view_mesh_with_textures(from, to, None)
+        self.build_view_mesh_with_textures_limited(from, to, None, None)
     }
 
     /// Like [`Self::build_view_mesh`], optionally sampling Minecraft block textures.
@@ -136,7 +159,21 @@ impl<'a> WorldView<'a> {
         &self,
         from: (i32, i32, i32),
         to: (i32, i32, i32),
+        atlas: Option<&mut BlockTextureAtlas>,
+    ) -> Result<ViewMesh> {
+        self.build_view_mesh_with_textures_limited(from, to, atlas, None)
+    }
+
+    /// Mesh build with optional `--max-cells` / env override.
+    ///
+    /// Performance: load each overlapping chunk/section **once** into a dense
+    /// occupancy+palette grid, then face-cull in memory (no per-cell disk I/O).
+    pub fn build_view_mesh_with_textures_limited(
+        &self,
+        from: (i32, i32, i32),
+        to: (i32, i32, i32),
         mut atlas: Option<&mut BlockTextureAtlas>,
+        max_cells: Option<usize>,
     ) -> Result<ViewMesh> {
         let (min_x, max_x) = (from.0.min(to.0), from.0.max(to.0));
         let (min_y, max_y) = (from.1.min(to.1), from.1.max(to.1));
@@ -145,8 +182,75 @@ impl<'a> WorldView<'a> {
         let sy = (max_y - min_y + 1) as usize;
         let sz = (max_z - min_z + 1) as usize;
         let cells = sx.saturating_mul(sy).saturating_mul(sz);
-        if cells == 0 || cells > VIEW_MAX_CELLS {
-            return Err(Error::msg("view box too large (max 48^3 cells)"));
+        let limit = resolve_view_max_cells(max_cells);
+        if cells == 0 || cells > limit {
+            return Err(Error::msg(format!(
+                "view box too large ({sx}x{sy}x{sz}={cells} cells; max={limit}; raise --max-cells / MCAEDIT_VIEW_MAX_CELLS)"
+            )));
+        }
+
+        // Dense grid: 0 = air, else 1-based palette index.
+        let mut grid = vec![0u16; cells];
+        let mut palette: Vec<BlockState> = Vec::new();
+        let mut palette_index: HashMap<BlockState, u16> = HashMap::new();
+
+        let idx = |x: i32, y: i32, z: i32| -> usize {
+            let xi = (x - min_x) as usize;
+            let yi = (y - min_y) as usize;
+            let zi = (z - min_z) as usize;
+            (yi * sz + zi) * sx + xi
+        };
+
+        let mut insert_state = |b: BlockState| -> u16 {
+            if b.is_air_like() {
+                return 0;
+            }
+            if let Some(id) = palette_index.get(&b) {
+                return *id;
+            }
+            if palette.len() >= u16::MAX as usize - 1 {
+                return 0;
+            }
+            palette.push(b.clone());
+            let id = palette.len() as u16; // 1-based
+            palette_index.insert(b, id);
+            id
+        };
+
+        // Chunk-batched preload (dominant speedup vs per-cell get_block disk thrash).
+        let min_cx = min_x >> 4;
+        let max_cx = max_x >> 4;
+        let min_cz = min_z >> 4;
+        let max_cz = max_z >> 4;
+        let min_sy = (min_y >> 4) as i8;
+        let max_sy = (max_y >> 4) as i8;
+        for cz in min_cz..=max_cz {
+            for cx in min_cx..=max_cx {
+                let chunk = self.load_chunk(cx, cz)?;
+                let bx0 = (cx << 4).max(min_x);
+                let bx1 = ((cx << 4) + 15).min(max_x);
+                let bz0 = (cz << 4).max(min_z);
+                let bz1 = ((cz << 4) + 15).min(max_z);
+                for sy_i in min_sy..=max_sy {
+                    let section = chunk.read_section_blocks(sy_i)?;
+                    let by0 = ((sy_i as i32) << 4).max(min_y);
+                    let by1 = (((sy_i as i32) << 4) + 15).min(max_y);
+                    for y in by0..=by1 {
+                        let ly = (y & 15) as u8;
+                        for z in bz0..=bz1 {
+                            let lz = (z & 15) as u8;
+                            for x in bx0..=bx1 {
+                                let lx = (x & 15) as u8;
+                                let b = section.get(lx, ly, lz).clone();
+                                let id = insert_state(b);
+                                if id != 0 {
+                                    grid[idx(x, y, z)] = id;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         let mut mesh = ViewMesh {
@@ -157,54 +261,65 @@ impl<'a> WorldView<'a> {
             to: (max_x, max_y, max_z),
             textures: Vec::new(),
         };
-        let mut tex_keys: HashMap<String, u16> = HashMap::new();
+        mesh.triangles.reserve(cells / 4);
+        let mut tex_keys: HashMap<(u16, u8), u16> = HashMap::new();
+
+        let neighbor_air = |x: i32, y: i32, z: i32| -> bool {
+            if x < min_x || x > max_x || y < min_y || y > max_y || z < min_z || z > max_z {
+                return true;
+            }
+            grid[idx(x, y, z)] == 0
+        };
+
+        let face_key = |f: CubeFace| -> u8 {
+            match f {
+                CubeFace::NegX => 0,
+                CubeFace::PosX => 1,
+                CubeFace::NegY => 2,
+                CubeFace::PosY => 3,
+                CubeFace::NegZ => 4,
+                CubeFace::PosZ => 5,
+            }
+        };
 
         for y in min_y..=max_y {
             for z in min_z..=max_z {
                 for x in min_x..=max_x {
-                    let b = self.get_block(x, y, z)?;
-                    if b.is_air_like() {
+                    let pid = grid[idx(x, y, z)];
+                    if pid == 0 {
                         continue;
                     }
                     mesh.blocks += 1;
-                    let palette = color_for_block(&b);
+                    let b = &palette[(pid as usize) - 1];
+                    let palette_col = color_for_block(b);
                     let tint = if needs_biome_tint(&b.name) {
-                        palette
+                        palette_col
                     } else {
                         Vec3::ONE
                     };
                     for (face_kind, mut face) in
-                        cube_faces(x as f32, y as f32, z as f32, palette)
+                        cube_faces(x as f32, y as f32, z as f32, palette_col)
                     {
                         let nx = x + face.normal.x as i32;
                         let ny = y + face.normal.y as i32;
                         let nz = z + face.normal.z as i32;
-                        let neighbor_is_air = if nx < min_x
-                            || nx > max_x
-                            || ny < min_y
-                            || ny > max_y
-                            || nz < min_z
-                            || nz > max_z
-                        {
-                            true
-                        } else {
-                            self.get_block(nx, ny, nz)?.is_air_like()
-                        };
-                        if !neighbor_is_air {
+                        if !neighbor_air(nx, ny, nz) {
                             continue;
                         }
                         let tex_id = match atlas.as_mut() {
-                            Some(a) => ensure_face_texture(
-                                a,
-                                &mut mesh.textures,
-                                &mut tex_keys,
-                                &b.name,
-                                face_kind,
-                            ),
+                            Some(a) => {
+                                let key = (pid, face_key(face_kind));
+                                if let Some(id) = tex_keys.get(&key) {
+                                    *id
+                                } else {
+                                    let id = ensure_face_texture(a, &mut mesh.textures, &b.name, face_kind);
+                                    tex_keys.insert(key, id);
+                                    id
+                                }
+                            }
                             None => 0,
                         };
-                        // Textured: vertex color is tint (ONE or grass/leaves). Solid: palette.
-                        let vert_color = if tex_id > 0 { tint } else { palette };
+                        let vert_color = if tex_id > 0 { tint } else { palette_col };
                         mesh.faces += 1;
                         for v in [&mut face.v0, &mut face.v1, &mut face.v2, &mut face.v3] {
                             v.tex_id = tex_id;
@@ -229,29 +344,29 @@ impl<'a> WorldView<'a> {
 }
 
 /// Open atlas from an explicit jar path, or auto-detect Minecraft 26.2.
-/// Never panics: missing/invalid jar → `(None, "palette")`.
+/// Never panics: missing/invalid jar → `(None, "palette reason=...")`.
 pub fn resolve_atlas_for_view(
     explicit: Option<&Path>,
     no_textures: bool,
 ) -> (Option<BlockTextureAtlas>, String) {
     if no_textures {
-        return (None, "palette".into());
+        return (None, "palette reason=no-textures".into());
     }
     if let Some(p) = explicit {
         return match BlockTextureAtlas::open(p) {
             Ok(a) => {
-                let label = a.path().display().to_string();
+                let label = format!("jar path={}", a.path().display());
                 (Some(a), label)
             }
-            Err(_) => (None, "palette".into()),
+            Err(_) => (None, "palette reason=jar-open-failed".into()),
         };
     }
     match BlockTextureAtlas::discover(DEFAULT_MC_VERSION) {
         Some(a) => {
-            let label = a.path().display().to_string();
+            let label = format!("jar path={}", a.path().display());
             (Some(a), label)
         }
-        None => (None, "palette".into()),
+        None => (None, "palette reason=jar-not-found".into()),
     }
 }
 
@@ -262,39 +377,31 @@ pub fn resolve_atlas_cli(
     no_textures: bool,
 ) -> (Option<BlockTextureAtlas>, String) {
     if no_textures {
-        return (None, "palette".into());
+        return (None, "palette reason=no-textures".into());
     }
     match BlockTextureAtlas::resolve(minecraft, assets_jar, DEFAULT_MC_VERSION) {
         Some(a) => {
-            let label = a.path().display().to_string();
+            let label = format!("jar path={}", a.path().display());
             (Some(a), label)
         }
-        None => (None, "palette".into()),
+        None => (None, "palette reason=jar-not-found".into()),
     }
 }
 
 fn ensure_face_texture(
     atlas: &mut BlockTextureAtlas,
     textures: &mut Vec<RgbaImage>,
-    keys: &mut HashMap<String, u16>,
     block_name: &str,
     face: CubeFace,
 ) -> u16 {
-    let key = format!("{block_name}|{face:?}");
-    if let Some(id) = keys.get(&key) {
-        return *id;
-    }
     let Some(img) = atlas.image_for_block_face(block_name, face) else {
-        keys.insert(key, 0);
         return 0;
     };
     if textures.len() >= u16::MAX as usize - 1 {
         return 0;
     }
     textures.push(img);
-    let id = textures.len() as u16; // 1-based
-    keys.insert(key, id);
-    id
+    textures.len() as u16 // 1-based
 }
 
 /// Soft-rasterize a mesh (same lighting/cull pipeline as screenshot).
@@ -523,16 +630,17 @@ pub fn suggest_preview_aabb(session: &Session) -> Result<PreviewAabb> {
     let mut max_z = max_cz * 16 + 15;
     let min_y = 48;
     let max_y = 95;
-    // Clamp XZ to 48 so volume stays within VIEW_MAX_CELLS with Y span 48.
+    // Soft clamp XZ so auto preview stays within default max cells (~2e6 with Y≈48).
+    let max_edge = 128;
     let mid_x = (min_x + max_x) / 2;
     let mid_z = (min_z + max_z) / 2;
-    if max_x - min_x + 1 > 48 {
-        min_x = mid_x - 23;
-        max_x = mid_x + 24;
+    if max_x - min_x + 1 > max_edge {
+        min_x = mid_x - max_edge / 2 + 1;
+        max_x = mid_x + max_edge / 2;
     }
-    if max_z - min_z + 1 > 48 {
-        min_z = mid_z - 23;
-        max_z = mid_z + 24;
+    if max_z - min_z + 1 > max_edge {
+        min_z = mid_z - max_edge / 2 + 1;
+        max_z = mid_z + max_edge / 2;
     }
     Ok(((min_x, min_y, min_z), (max_x, max_y, max_z)))
 }
@@ -719,8 +827,8 @@ fn draw_triangle(
     let p1 = Vec2::new(b.x, b.y);
     let p2 = Vec2::new(c.x, c.y);
     let area = edge(p0, p1, p2);
-    if area.abs() < 1e-5 {
-        return;
+    if area <= 1e-5 {
+        return; // degenerate or back-facing
     }
     let min_x = p0.x.min(p1.x).min(p2.x).floor().max(0.0) as u32;
     let min_y = p0.y.min(p1.y).min(p2.y).floor().max(0.0) as u32;
@@ -1110,8 +1218,47 @@ mod tests {
         let (atlas, label) = resolve_atlas_for_view(Some(Path::new("/nope/missing.jar")), false);
         // resolve tries explicit then auto-detect — may still find a real jar on developer machines.
         if atlas.is_none() {
-            assert_eq!(label, "palette");
+            assert!(label.starts_with("palette"), "{label}");
         }
+    }
+
+    #[test]
+    fn texture_labels_distinguish_jar_and_palette() {
+        assert_eq!(
+            resolve_atlas_cli(None, None, true).1,
+            "palette reason=no-textures"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        // minimal jar via assets tests pattern
+        let jar = dir.path().join("t.jar");
+        {
+            use std::io::Write;
+            use zip::write::SimpleFileOptions;
+            use zip::ZipWriter;
+            let mut img = RgbaImage::new(2, 2);
+            for p in img.pixels_mut() {
+                *p = Rgba([1, 2, 3, 255]);
+            }
+            let png = dir.path().join("stone.png");
+            img.save(&png).unwrap();
+            let file = fs::File::create(&jar).unwrap();
+            let mut zip = ZipWriter::new(file);
+            let opts =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("assets/minecraft/textures/block/stone.png", opts)
+                .unwrap();
+            zip.write_all(&fs::read(&png).unwrap()).unwrap();
+            zip.finish().unwrap();
+        }
+        let (_a, label) = resolve_atlas_cli(Some(&jar), None, false);
+        assert!(label.starts_with("jar path="), "{label}");
+        assert!(label.contains("t.jar"), "{label}");
+    }
+
+    #[test]
+    fn resolve_view_max_cells_honors_explicit() {
+        assert_eq!(resolve_view_max_cells(Some(12345)), 12345);
+        assert!(resolve_view_max_cells(None) >= VIEW_MAX_CELLS_DEFAULT);
     }
 
     #[test]

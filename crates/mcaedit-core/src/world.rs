@@ -168,7 +168,7 @@ impl<'a> WorldView<'a> {
         self.plan_set_pattern_positions(positions, &Pattern::single(block.clone()), None)
     }
 
-    fn plan_set_pattern_positions(
+    pub(crate) fn plan_set_pattern_positions(
         &mut self,
         positions: &[(i32, i32, i32)],
         pattern: &Pattern,
@@ -1684,6 +1684,87 @@ impl<'a> WorldView<'a> {
         Ok(lines)
     }
 
+    /// Large-AABB counts without ASCII dump (验收-friendly).
+    pub fn summary_box(
+        &self,
+        x1: i32,
+        y1: i32,
+        z1: i32,
+        x2: i32,
+        y2: i32,
+        z2: i32,
+    ) -> Result<Vec<String>> {
+        let (min_x, max_x) = (x1.min(x2), x1.max(x2));
+        let (min_y, max_y) = (y1.min(y2), y1.max(y2));
+        let (min_z, max_z) = (z1.min(z2), z1.max(z2));
+        let sx = (max_x - min_x + 1) as usize;
+        let sy = (max_y - min_y + 1) as usize;
+        let sz = (max_z - min_z + 1) as usize;
+        let cells = sx.saturating_mul(sy).saturating_mul(sz);
+        if cells == 0 || cells > 2_000_000 {
+            return Err(Error::msg(format!(
+                "summary-box too large ({sx}x{sy}x{sz}={cells}; max=2000000)"
+            )));
+        }
+        let mut counts: indexmap::IndexMap<String, usize> = indexmap::IndexMap::new();
+        let mut non_air = 0usize;
+        // Chunk-batched scan
+        let min_cx = min_x >> 4;
+        let max_cx = max_x >> 4;
+        let min_cz = min_z >> 4;
+        let max_cz = max_z >> 4;
+        let min_sy = (min_y >> 4) as i8;
+        let max_sy = (max_y >> 4) as i8;
+        for cz in min_cz..=max_cz {
+            for cx in min_cx..=max_cx {
+                let chunk = self.load_chunk(cx, cz)?;
+                let bx0 = (cx << 4).max(min_x);
+                let bx1 = ((cx << 4) + 15).min(max_x);
+                let bz0 = (cz << 4).max(min_z);
+                let bz1 = ((cz << 4) + 15).min(max_z);
+                for sy_i in min_sy..=max_sy {
+                    let section = chunk.read_section_blocks(sy_i)?;
+                    let by0 = ((sy_i as i32) << 4).max(min_y);
+                    let by1 = (((sy_i as i32) << 4) + 15).min(max_y);
+                    for y in by0..=by1 {
+                        let ly = (y & 15) as u8;
+                        for z in bz0..=bz1 {
+                            let lz = (z & 15) as u8;
+                            for x in bx0..=bx1 {
+                                let lx = (x & 15) as u8;
+                                let b = section.get(lx, ly, lz);
+                                let key = if b.is_air_like() {
+                                    BlockState::air().to_compact()
+                                } else {
+                                    non_air += 1;
+                                    b.to_compact()
+                                };
+                                *counts.entry(key).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "summary-box ({min_x},{min_y},{min_z})..({max_x},{max_y},{max_z}) size={sx}x{sy}x{sz} cells={cells} non_air={non_air} kinds={}",
+            counts.len()
+        ));
+        let mut items: Vec<_> = counts.into_iter().collect();
+        items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        for (name, n) in items.into_iter().take(64) {
+            lines.push(format!("{n}\t{name}"));
+        }
+        if non_air > 0 {
+            lines.push(
+                "hint=for visuals use: mcaedit view screenshot --from .. --to .. (raise --max-cells if needed)"
+                    .into(),
+            );
+        }
+        Ok(lines)
+    }
+
     /// AABB select with palette rebuild:
     /// 1) block id table for the box
     /// 2) ASCII 3D as Y layers of those ids
@@ -1702,11 +1783,13 @@ impl<'a> WorldView<'a> {
         let sx = (max_x - min_x + 1) as usize;
         let sy = (max_y - min_y + 1) as usize;
         let sz = (max_z - min_z + 1) as usize;
-        if sx * sy * sz > 32 * 32 * 32 {
-            return Err(Error::msg("select box too large (max 32^3 cells)"));
+        if sx * sy * sz > 48 * 48 * 48 {
+            return Err(Error::msg(
+                "select box too large (max 48^3 cells); use inspect summary-box or view screenshot",
+            ));
         }
-        if sx > 48 || sz > 48 {
-            return Err(Error::msg("select box xz too wide (max 48)"));
+        if sx > 64 || sz > 64 {
+            return Err(Error::msg("select box xz too wide (max 64); use inspect summary-box"));
         }
 
         // Pass 1: rebuild local palette (air forced to id 0 when present).

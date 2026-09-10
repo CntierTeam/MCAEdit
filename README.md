@@ -32,7 +32,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Force
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/install.sh \
-  | bash -s -- --version v0.8.1 --force
+  | bash -s -- --version v0.9.0 --force
 ./scripts/install.sh --from-source --symlink-skill --force
 ./scripts/install.sh --uninstall
 ```
@@ -76,8 +76,8 @@ mcaedit --session demo edit tick --from 0,0 --to 3,3 --rounds 40 --speed 3
 产物：`mcaedit-<target>.tar.gz`、`mcaedit-skill.tar.gz`、`install.sh` / `install.ps1`。
 
 ```bash
-git tag v0.8.1
-git push origin v0.8.1
+git tag v0.9.0
+git push origin v0.9.0
 ```
 
 ## level.dat / 新建世界 / 结构
@@ -88,7 +88,7 @@ mcaedit world create --path ./myworld --name Demo --seed 42 --mc 26.2 --generato
 mcaedit level info --world ./myworld
 mcaedit level patch --world ./myworld --spawn 0,64,0 --game-type 1 --touch
 
-# 空目录开 session 时自动建 level.dat + region/
+# world create=新建；session --bootstrap=缺骨架则补齐（已有 level.dat 则复用，不覆盖）
 mcaedit session create --world ./myworld --id demo --bootstrap --mc 26.2 --seed 42
 
 # 原版结构 .nbt（与 Sponge .schem 不同）
@@ -103,7 +103,7 @@ mcaedit --session demo structure clear-refs --from 0,0,0 --to 63,0,63
 
 ## Region edits
 
-选区一律 `--from x,y,z --to x,y,z`（无 pos1/pos2）。`--block` / `--pattern` 支持 `%` 权重（如 `50%stone,50%dirt`）；`--mask` / `--mask-exclude` 可组合过滤。
+选区一律 `--from x,y,z --to x,y,z`（无 pos1/pos2）。负坐标可用 `--from -8,60,-8` 或 `--from=-8,60,-8`。`--block` / `--pattern` 支持 `%` 权重（如 `50%stone,50%dirt`）；`--mask` / `--mask-exclude` 可组合过滤。
 
 ```bash
 mcaedit --session demo edit fill --from 0,64,0 --to 7,66,7 --block minecraft:stone
@@ -189,7 +189,8 @@ export MCAEDIT_MINECRAFT_JAR=~/.minecraft/versions/26.2/26.2.jar
 mcaedit view screenshot ... --no-textures
 ```
 
-未指定时自动探测常见启动器路径（`~/.minecraft/versions/26.2/26.2.jar`、Flatpak、Prism/PolyMC/MultiMC、HMCL、`%APPDATA%/.minecraft/...`）。仓库**不**内嵌整包 jar。
+未指定时自动探测：`/other/Minecraft/.minecraft/versions/26.2/26.2.jar`、`~/.minecraft/...`、Flatpak、Prism/PolyMC/MultiMC、HMCL、`%APPDATA%/.minecraft/...`。环境变量 `MCAEDIT_MINECRAFT_JAR` / `MCAEDIT_ASSETS_JAR`。日志形如 `textures=jar path=...` 或 `textures=palette reason=...`。
+大体积截图默认上限 2e6 cells（`--max-cells` / `MCAEDIT_VIEW_MAX_CELLS`）。仓库**不**内嵌整包 jar。
 
 **`view preview` / `preview`** 打开原生窗口，轮询 session 工作副本 `region/*.mca`、`meta.json`、`HEAD`，在另一终端跑 `edit fill/brush/...` 时可看实时建造进度（face-cull 软光栅，与 screenshot 共用 mesh / 贴图管线）。
 
@@ -270,3 +271,14 @@ mcaedit commit --dry-run
 - `--json` on selected commands for machine output.
 - Env: `MCAEDIT_SESSION=<id>`.
 - Windows / large MCA writes need a large stack; the CLI spawns a 16MiB worker.
+
+
+## 建造助手 / 大盒验收 / 租约（v0.9）
+
+```bash
+mcaedit edit grid --from 0,64,0 --to 31,72,31 --spacing-x 4 --spacing-z 4 --block minecraft:oak_log
+mcaedit edit roof-rows --from 0,80,0 --to 31,80,31 --axis z --period 2 --block minecraft:brick_slab
+mcaedit edit stairs --from 0,64,0 --to 7,64,0 --block minecraft:oak_stairs --facing east
+mcaedit inspect summary-box --from=-10,55,-55 --to=45,100,12
+mcaedit session lease --from=-32,60,-32 --to=32,90,32
+```
