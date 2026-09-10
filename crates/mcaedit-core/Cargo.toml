@@ -5,6 +5,16 @@ edition.workspace = true
 license.workspace = true
 description = "Offline MCA edit session, history, commit, and worldgen bridge"
 
+[features]
+default = ["minimal-pumpkin"]
+# Default: compile only pumpkin-data worldgen/lighting modules (see scripts/ensure-vendor.sh).
+# Does not shrink the vendor *clone*; it shrinks the rustc graph for gen/fix-light/tick.
+minimal-pumpkin = []
+# Opt into full pumpkin-data default feature set (items/translations/advancements/…).
+# Also run: MCAEDIT_PUMPKIN_MINIMAL=0 bash scripts/ensure-vendor.sh
+# then cargo clean -p pumpkin-data && cargo build.
+full-pumpkin = []
+
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true

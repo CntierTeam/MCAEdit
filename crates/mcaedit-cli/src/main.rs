@@ -56,7 +56,7 @@ enum Commands {
         #[command(subcommand)]
         cmd: TemplateCmd,
     },
-    /// Sponge schematic (.schem) import / export
+    /// Sponge schematic (.schem) info / import / export (v2 write; v1–v3 read)
     Schem {
         #[command(subcommand)]
         cmd: SchemCmd,
@@ -158,7 +158,7 @@ enum TemplateCmd {
 
 #[derive(Subcommand, Debug)]
 enum SchemCmd {
-    /// Export AABB to .schem (Sponge v2)
+    /// Export AABB to .schem (Sponge v2, WE-compatible Schematic wrapper)
     Export {
         #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         from: String,
@@ -167,14 +167,14 @@ enum SchemCmd {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Import/paste .schem at origin
+    /// Import/paste .schem at origin (applies schematic Offset: at+Offset)
     Import {
         #[arg(long)]
         file: PathBuf,
         #[arg(long, allow_hyphen_values = true, help = "x,y,z")]
         at: String,
     },
-    /// Show .schem metadata
+    /// Parse-only: dimensions, Offset, DataVersion, palette, block summary
     Info {
         #[arg(long)]
         file: PathBuf,
@@ -1787,15 +1787,27 @@ fn run() -> Result<()> {
             SchemCmd::Info { file } => {
                 let info = mcaedit_core::schem::info(&file)?;
                 if cli.json {
+                    let top: Vec<serde_json::Value> = info
+                        .top_blocks
+                        .iter()
+                        .map(|(name, n)| serde_json::json!({ "block": name, "count": n }))
+                        .collect();
                     println!(
                         "{}",
                         serde_json::json!({
                             "path": info.path,
                             "version": info.version,
+                            "DataVersion": info.data_version,
+                            "mc": info.mc,
                             "width": info.width,
                             "height": info.height,
                             "length": info.length,
+                            "offset": info.offset,
+                            "volume": info.volume,
                             "palette_n": info.palette_n,
+                            "entities": info.entities,
+                            "block_entities": info.block_entities,
+                            "blocks_top": top,
                         })
                     );
                 } else {

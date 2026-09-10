@@ -38,7 +38,7 @@ Brush：`--at` + `--radius`（柱再加 `--height`）。
 | 旋转/翻转 | `edit rotate --yaw` / `flip --axis`（剪贴板） |
 | 撤销/重做 | `history undo`/`redo` |
 | 模板 | `template save`/`paste`/`export-schem`/`import-schem` |
-| `.schem` | `schem export`/`import`/`info`（Sponge v2 写；v2/v3 读） |
+| `.schem` | `schem info`（解析-only）/`export`/`import`（Sponge v2 写+WE `Schematic` 包装；读 v1–v3；import 应用 Offset） |
 | **结构 `.nbt`** | `structure list\|info\|place\|export\|import\|clear-refs`（`--rotation` / `--mirror`） |
 | **新建世界 / level.dat** | `world create`；`level info\|write\|patch`；`session create --bootstrap`（已有 level.dat 复用） |
 | 地形 gen | `edit gen --seed --dim --from/--to` |

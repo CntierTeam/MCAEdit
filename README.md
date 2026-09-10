@@ -32,14 +32,14 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Force
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/install.sh \
-  | bash -s -- --version v0.10.0 --force
+  | bash -s -- --version v0.11.0 --force
 ./scripts/install.sh --from-source --symlink-skill --force
 ./scripts/install.sh --uninstall
 ```
 
 ## 从源码构建
 
-地形栈在仓库内 submodule：`vendor/pumpkin`（`scripts/ensure-vendor.sh` 会 init/浅克隆，并修补嵌套 workspace 继承）。
+地形栈在仓库内 submodule：`vendor/pumpkin`（`scripts/ensure-vendor.sh` 会 init/浅克隆，修补嵌套 workspace 继承，并对 **pumpkin-data 做编译裁枝**）。
 
 ```bash
 bash scripts/ensure-vendor.sh
@@ -49,6 +49,35 @@ cargo build --release -p mcaedit-cli
 ```
 
 或：`./scripts/install.sh --from-source --force`（内部会先 ensure-vendor）。
+
+### Pumpkin 裁枝（`minimal-pumpkin`，默认开）
+
+MCAEdit **本来就不会链接** Pumpkin 服务端 / protocol / plugin / inventory 等 crate（workspace `exclude = ["vendor/pumpkin"]`，path dep 只有 `pumpkin-world` / `util` / `data` / `config`）。真正拖慢编译的是 `pumpkin-data` 的 **default features**（item / translation / advancement / registry / bedrock / … 等巨型生成代码）。
+
+`ensure-vendor.sh` 默认（`MCAEDIT_PUMPKIN_MINIMAL=1`）会：
+
+1. 把 `pumpkin-world` → `pumpkin-data` 改成 `default-features = false` + 仅 worldgen/光照所需 feature（block/chunk/dimension/fluid/tag/noise/structures/…）
+2. 把未使用的 `loot_table` 模块改成 `cfg(feature = "loot_table")`（离线 gen/fix-light 不需要）
+3. 去掉 `biome.rs` 里未使用的 `EntityType` import（否则会连锁拉起 entity→item 整图）
+4. 把 end_city 鞘翅 item-frame 写成手写 NBT（避免启用整个 `item` feature）
+
+| | 全量 `pumpkin-data` default | 裁枝后（本仓库默认） |
+|--|--|--|
+| 冷编译 `pumpkin-data`（本机实测） | ~542s / rlib ~175MB | ~79s / rlib ~79MB |
+| 仍需完整 vendor **克隆** | 是（path 布局 + workspace） | 是（裁的是 **编译图**，不是 clone 体积） |
+| `edit gen` / `fix-light` / `tick` | ✅ | ✅ |
+
+```bash
+# 默认裁枝
+bash scripts/ensure-vendor.sh
+cargo build -p mcaedit-cli
+
+# 关闭裁枝（恢复 Pumpkin default features；更慢）
+MCAEDIT_PUMPKIN_MINIMAL=0 bash scripts/ensure-vendor.sh
+cargo clean -p pumpkin-data && cargo build -p mcaedit-cli
+```
+
+下一步（若仍嫌重）：把 `pumpkin-world` 再拆成 `lighting` / `generation` feature，或 sparse-checkout 丢掉 server crate 源码（只省磁盘，对链接图无增益）。
 
 ## 地形 / 光照 / tick
 
@@ -76,8 +105,8 @@ mcaedit --session demo edit tick --from 0,0 --to 3,3 --rounds 40 --speed 3
 产物：`mcaedit-<target>.tar.gz`、`mcaedit-skill.tar.gz`、`install.sh` / `install.ps1`。
 
 ```bash
-git tag v0.10.0
-git push origin v0.10.0
+git tag v0.11.0
+git push origin v0.11.0
 ```
 
 ## level.dat / 新建世界 / 结构
@@ -152,14 +181,15 @@ mcaedit --session demo edit biome --from 0,64,0 --to 31,80,31 --biome minecraft:
 ## Sponge `.schem`
 
 ```bash
-mcaedit --session demo schem export --from 0,64,0 --to 15,80,15 --out /tmp/box.schem
 mcaedit schem info --file /tmp/box.schem
+mcaedit --json schem info --file /tmp/box.schem
+mcaedit --session demo schem export --from 0,64,0 --to 15,80,15 --out /tmp/box.schem
 mcaedit --session demo schem import --file /tmp/box.schem --at 64,64,64
 mcaedit template export-schem --name hut --out /tmp/hut.schem
 mcaedit template import-schem --file /tmp/hut.schem --name hut
 ```
 
-写出 Sponge Schematic **v2**；读取支持 v2/v3。
+写出 Sponge Schematic **v2**（根下 `Schematic` 包装，兼容 WE/FAWE）；读取支持 **v1/v2/v3**。`info` 给出 DataVersion、Offset、volume、方块 Top-N。`import` 放置原点 = `--at` + Offset。不支持经典 MCEdit `.schematic`。
 
 ## Offline view screenshot / live preview
 

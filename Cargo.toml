@@ -7,7 +7,7 @@ members = [
 exclude = ["vendor/pumpkin"]
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 license = "GPL-3.0"
 authors = ["CntierTeam"]
@@ -33,10 +33,28 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 zstd = "0.14"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 ruzstd = { version = "0.9.0", default-features = false, features = ["std"] }
-# Path into submodule; ensure-vendor.sh patches package.workspace so nested inherit works.
+# Path into submodule; ensure-vendor.sh patches package.workspace + pumpkin-data features
+# (minimal-pumpkin / MCAEDIT_PUMPKIN_MINIMAL=1). Server/protocol/plugin crates are never
+# path-deps of MCAEdit — only world/util/data/config (+ nbt/codecs transitive).
 pumpkin-world = { path = "vendor/pumpkin/crates/pumpkin-world" }
 pumpkin-util = { path = "vendor/pumpkin/crates/pumpkin-util" }
-pumpkin-data = { path = "vendor/pumpkin/crates/pumpkin-data" }
+# Mirror ensure-vendor worldgen feature set; default-features=false so we do not re-enable
+# item/translation/advancement/… even if a future pumpkin-world dep regresses.
+pumpkin-data = { path = "vendor/pumpkin/crates/pumpkin-data", default-features = false, features = [
+    "block",
+    "chunk",
+    "dimension",
+    "fluid",
+    "game_rules",
+    "tag",
+    "noise_router",
+    "material_rule",
+    "noise_settings",
+    "carver",
+    "structures",
+    "placed_feature",
+    "configured_feature",
+] }
 pumpkin-config = { path = "vendor/pumpkin/crates/pumpkin-config" }
 
 [profile.release]

@@ -19,7 +19,7 @@ metadata:
 # MCAEdit
 
 产品：**`mcaedit`** — 离线 Minecraft Anvil（`.mca`）/ Linear（`.linear`）编辑 CLI（**GPL-3.0**）。
-**当前版本：0.10.0**（`mcaedit --version`；与 workspace `Cargo.toml` 对齐）。
+**当前版本：0.11.0**（`mcaedit --version`；与 workspace `Cargo.toml` 对齐）。
 
 你是 **操作员**：用户要开 session、inspect、填方/替换/几何、brush、mask/% pattern、smooth/smooth3d、biome、剪贴板、模板、`.schem`、**结构 `.nbt`**、**level.dat / world create**、undo、地形 gen、fix-light、**tick**、view 截图 / **实时 preview**、commit → **自己在 shell 执行 `mcaedit`**，不要只拼命令给用户。
 
@@ -186,7 +186,7 @@ mcaedit inspect select --from=0,64,0 --to=7,66,7   # 小选区可视化
 
 ```bash
 command -v mcaedit || ~/.local/bin/mcaedit --help
-mcaedit --version   # 期望 0.10.0+
+mcaedit --version   # 期望 0.11.0+
 
 # 空目录建世界骨架（level.dat + region/）；默认 MC 26.2 DataVersion=4903
 mcaedit world create --path /tmp/newworld --name Demo --seed 42 --mc 26.2 --generator flat
@@ -206,6 +206,14 @@ mcaedit edit brush biome --at 0,70,0 --radius 8 --biome minecraft:desert
 mcaedit edit smooth3d --from 0,60,0 --to 15,80,15 --iterations 2 --kernel 1
 mcaedit edit tick --from 0,0 --to 0,0 --rounds 20 --speed 3
 mcaedit edit fix-light --from 0,0 --to 0,0 --dim overworld   # 截图前建议修光（BlockLight/SkyLight）
+
+# Sponge .schem（≠ 原版结构 .nbt）— 解析 / 放置 / 导出
+mcaedit schem info --file /tmp/box.schem
+mcaedit --json schem info --file /tmp/box.schem   # DataVersion/offset/volume/blocks_top
+mcaedit schem export --from 0,64,0 --to 15,80,15 --out /tmp/box.schem
+mcaedit schem import --file /tmp/box.schem --at 64,64,64   # 实际原点 = at + Offset
+mcaedit template export-schem --name hut --out /tmp/hut.schem
+mcaedit template import-schem --file /tmp/hut.schem --name hut
 
 # 原版结构 .nbt（≠ .schem）
 mcaedit structure export --from 0,64,0 --to 7,70,7 --out /tmp/hut.nbt
@@ -252,7 +260,7 @@ mcaedit commit
 | **离线截图** | `view screenshot`：blockstates/models/贴图 + BlockLight/SkyLight；`--minecraft\|--assets-jar` / `--max-cells` / `--no-textures`；日志 `textures=models+textures jar path=...` 或 `palette reason=...` |
 | **实时预览** | `view preview` / `preview`（同管线；`--watch`；需显示器） |
 | 模板 | `template save\|list\|show\|paste\|rm\|export-schem\|import-schem` |
-| **`.schem`** | `schem export\|import\|info`（Sponge v2 写出；读 v2/v3） |
+| **`.schem`** | `schem info\|export\|import`（Sponge v2 写出+WE `Schematic` 包装；读 v1–v3；见下方专节） |
 | **结构 `.nbt`** | `structure list\|info\|place\|export\|import\|clear-refs`（原版 structure；place 可 `--rotation` / `--mirror`） |
 | 撤销 / 重做 / 回退 | `history undo\|redo\|revert\|list` |
 | 写回世界 | `commit`（可先 `--dry-run`；注意 `warn=` 冲突提示） |
@@ -302,6 +310,36 @@ mcaedit view preview --assets-jar ~/.minecraft/versions/26.2/26.2.jar
 环境变量：`MCAEDIT_MINECRAFT_JAR` / `MCAEDIT_ASSETS_JAR`；大截图体积：`MCAEDIT_VIEW_MAX_CELLS`（默认 2000000）。
 CLI 日志字段：`textures=models+textures jar path=...` 或 `textures=palette reason=...`（详见上文「view 渲染」专节）。
 
+## Sponge `.schem`（v0.10.1+ / 含于 0.11.0）— Agent 必读
+
+与原版 **structure `.nbt`** 不同。WorldEdit / FAWE 常用 Sponge Schematic。
+
+| | 支持 |
+|--|--|
+| **读** | Sponge **v1 / v2 / v3**（`.schem`；gzip NBT） |
+| **写** | Sponge **v2**，根下带 WE 兼容的 `Schematic` 包装；`DataVersion` 来自 session / 默认 26.2 |
+| **不支持** | 经典 MCEdit **`.schematic`**（会明确报错，提示用 WE/FAWE 转 Sponge） |
+
+```bash
+# 解析-only（无需 session）：尺寸 / Offset / DataVersion / palette / 方块 Top-N
+mcaedit schem info --file /path/to/build.schem
+mcaedit --json schem info --file /path/to/build.schem
+# JSON 字段：version, DataVersion, mc, width/height/length, offset, volume,
+# palette_n, entities, block_entities, blocks_top[{block,count}]
+
+# 导出（需 session）→ 工作副本 AABB
+mcaedit schem export --from=0,64,0 --to=15,80,15 --out /tmp/box.schem
+
+# 粘贴：实际放置原点 = --at + schem Offset（Sponge 规范；本仓库自导出 Offset 多为 0,0,0）
+mcaedit schem import --file /tmp/box.schem --at=64,64,64
+```
+
+**坑：**
+- WE/FAWE 文件常是 `{ Schematic: { Version, … } }`；0.10.1+ 已解包，旧二进制可能报 missing Width。
+- `schem import` 会应用 **Offset**；若 WE 文件 Offset 非零，落点会偏。先 `schem info` 看 `offset=`。
+- 负坐标 `--at` 用 `=`：`--at=-8,64,-8`。
+- 块实体（BlockEntities）目前计入 `info`，粘贴管线以方块 + Entities 为主（与 template 一致）。
+
 ## Linear region
 
 Session 可打开仅含 `r.X.Z.linear`（v1/v2）的世界：工作副本自动转成 `.mca` 编辑；`commit` 若源为 Linear 则写回 `.linear`。
@@ -340,12 +378,17 @@ curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/ins
 
 `--symlink-skill` 会把 `~/.codex/skills/mcaedit` 链到仓库 `.codex/skills/mcaedit`（改 SKILL 后无需再拷）。
 
+## Pumpkin 裁枝（源码构建 / 0.11.0+）
+
+离线 `gen` / `fix-light` / `tick` 走 `vendor/pumpkin` 的 `pumpkin-world` + `pumpkin-data`。**不**编译服务端/协议/插件 crate。`scripts/ensure-vendor.sh` 默认裁掉 `pumpkin-data` 的 item/translation/advancement/… features（`MCAEDIT_PUMPKIN_MINIMAL=1`）。仍需完整 submodule **克隆**；裁的是 rustc 图。关闭：`MCAEDIT_PUMPKIN_MINIMAL=0 bash scripts/ensure-vendor.sh`。详见 README「Pumpkin 裁枝」。
+
 ## Out of scope / 诚实限制
 
 - 完整服务端 random-tick（光照/湿度/邻居更新/蜜蜂授粉等）；离线 tick 覆盖作物 age、甘蔗/仙人掌/竹子向上长、草/菌丝扩散、farmland 湿度递减，以及 scheduled tick 队列步进（到期条目移除，不执行完整方块行为）
 - 生物群系分辨率低于 4×4×4（MCA section biomes 固有限制）
 - Linear：支持读/写 v1 与 v2；工作副本仍以 Anvil 编辑
 - **view（0.10.0）**：从 client jar 加载 blockstates + models + 贴图，按 model elements 出几何（非 cubes-only）；光照 = BlockLight/SkyLight × lightmap × face shade + 简化 AO。缺 jar / `--no-textures` → 调色板立方体。仍无 CTM / 流体曲面 / 实体方块特殊渲染；动画仅首帧；AO 非完整邻域。验收截图前先 `fix-light`
+- **`.schem`**：无经典 `.schematic`；BlockEntities 粘贴未完整还原 TE NBT；无自动 DataFixer 跨版本改方块 id
 - **structure place**：稠密体积上限 64³；多 palette 结构只用第一套；旋转/镜像改方块坐标，**不**旋转方块 state（如楼梯朝向）
 - **structure clear-refs**：清 chunk `structures` starts/References，**不入** history undo
 - **level.dat**：写入常用字段（LevelName/Seed/Spawn/GameType/WorldGenSettings/Version…）；不保证与所有第三方服务端 sidecar 全集一致；现代布局额外写 `world_gen_settings.dat`
