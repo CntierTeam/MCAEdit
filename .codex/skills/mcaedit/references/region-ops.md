@@ -27,8 +27,12 @@ Brush：`--at` + `--radius`（柱再加 `--height`）。
 | 撤销/重做 | `history undo`/`redo` |
 | 模板 | `template save`/`paste`/`export-schem`/`import-schem` |
 | `.schem` | `schem export`/`import`/`info`（Sponge v2 写；v2/v3 读） |
+| **结构 `.nbt`** | `structure list\|info\|place\|export\|import\|clear-refs`（`--rotation` / `--mirror`） |
+| **新建世界 / level.dat** | `world create`；`level info\|write\|patch`；`session create --bootstrap` |
 | 地形 gen | `edit gen --seed --dim --from/--to` |
 | 重光照 | `edit fix-light` |
 | **离线 tick** | `edit tick`（别名 `tick-participate`） |
-| 离线截图 | `view screenshot --from/--to [--out] [--width] [--height]` |
-| Linear region | session 打开 `.linear`；commit 按源格式写回 |
+| 离线截图 | `view screenshot --from/--to [--out] [--width] [--height] [--minecraft\|--assets-jar] [--no-textures]` |
+| **实时预览** | `view preview` / `preview`（`--watch`；需显示器；可贴图 jar） |
+| Linear region | session 打开 `.linear`；commit 按源格式写回；`world create --region-format linear` |
+| DataVersion | `--mc 26.2`（默认 4903）及 1.18.2–1.21.x 别名；或裸 `--mc 3465` |

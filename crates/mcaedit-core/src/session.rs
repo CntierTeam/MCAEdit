@@ -107,36 +107,35 @@ impl Session {
 
         let region_dir = dim_region_dir(&source_world, dim);
         let mut data_version = opts.data_version;
-        if opts.bootstrap || crate::level::needs_bootstrap(&source_world) {
-            if !region_dir.exists() || opts.bootstrap {
-                let mut create = crate::level::WorldCreateOptions::default();
-                create.path = source_world.clone();
-                create.level_name = opts
-                    .level_name
-                    .clone()
-                    .unwrap_or_else(|| {
-                        source_world
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("world")
-                            .to_string()
-                    });
-                if let Some(seed) = opts.seed {
-                    create.seed = seed;
-                }
-                if let Some(v) = opts.version.clone() {
-                    create.version = v;
-                }
-                if let Some(g) = opts.generator {
-                    create.generator = g;
-                }
-                if let Some(fmt) = opts.region_format {
-                    create.region_format = fmt;
-                }
-                create.force = opts.force_level || !source_world.join("level.dat").exists();
-                let info = crate::level::create_world(&create)?;
-                data_version = data_version.or(info.data_version);
+        if (opts.bootstrap || crate::level::needs_bootstrap(&source_world))
+            && (!region_dir.exists() || opts.bootstrap)
+        {
+            let mut create = crate::level::WorldCreateOptions {
+                path: source_world.clone(),
+                level_name: opts.level_name.clone().unwrap_or_else(|| {
+                    source_world
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("world")
+                        .to_string()
+                }),
+                force: opts.force_level || !source_world.join("level.dat").exists(),
+                ..Default::default()
+            };
+            if let Some(seed) = opts.seed {
+                create.seed = seed;
             }
+            if let Some(v) = opts.version.clone() {
+                create.version = v;
+            }
+            if let Some(g) = opts.generator {
+                create.generator = g;
+            }
+            if let Some(fmt) = opts.region_format {
+                create.region_format = fmt;
+            }
+            let info = crate::level::create_world(&create)?;
+            data_version = data_version.or(info.data_version);
         }
         if !region_dir.exists() {
             return Err(Error::msg(format!(

@@ -141,15 +141,13 @@ pub fn import_to_template(path: &Path, name: &str) -> Result<Template> {
 /// Export AABB as vanilla structure `.nbt`.
 pub fn export_aabb(
     world: &WorldView<'_>,
-    x1: i32,
-    y1: i32,
-    z1: i32,
-    x2: i32,
-    y2: i32,
-    z2: i32,
+    from: [i32; 3],
+    to: [i32; 3],
     out: &Path,
     data_version: i32,
 ) -> Result<StructureInfo> {
+    let [x1, y1, z1] = from;
+    let [x2, y2, z2] = to;
     let tpl = Template::capture(world, "structure", x1, y1, z1, x2, y2, z2)?;
     write_template_structure(&tpl, out, data_version)?;
     info(out)
@@ -456,15 +454,13 @@ pub fn chunk_structure_summary(chunk: &crate::chunk::ChunkData) -> Vec<String> {
 /// Clear structure starts and/or references intersecting an AABB (chunk-level).
 pub fn clear_structures_in_aabb(
     world: &mut WorldView<'_>,
-    x1: i32,
-    y1: i32,
-    z1: i32,
-    x2: i32,
-    y2: i32,
-    z2: i32,
+    from: [i32; 3],
+    to: [i32; 3],
     clear_starts: bool,
     clear_refs: bool,
 ) -> Result<usize> {
+    let [x1, y1, z1] = from;
+    let [x2, y2, z2] = to;
     let (min_x, max_x) = (x1.min(x2), x1.max(x2));
     let (min_z, max_z) = (z1.min(z2), z1.max(z2));
     let _ = (y1, y2); // structure refs are XZ/chunk keyed
@@ -487,17 +483,15 @@ pub fn clear_structures_in_aabb(
                 continue;
             };
             let mut changed = false;
-            if clear_starts {
-                if st.remove("starts").is_some() {
-                    st.insert("starts".into(), json!({}));
-                    changed = true;
-                }
+            if clear_starts && st.remove("starts").is_some() {
+                st.insert("starts".into(), json!({}));
+                changed = true;
             }
-            if clear_refs {
-                if st.remove("References").is_some() || st.remove("references").is_some() {
-                    st.insert("References".into(), json!({}));
-                    changed = true;
-                }
+            if clear_refs
+                && (st.remove("References").is_some() || st.remove("references").is_some())
+            {
+                st.insert("References".into(), json!({}));
+                changed = true;
             }
             if changed {
                 world.save_chunk(&chunk)?;
@@ -543,7 +537,14 @@ mod tests {
             )
             .unwrap();
             let out = tmp.path().join("hut.nbt");
-            export_aabb(&wv, 0, 64, 0, 2, 65, 1, &out, DEFAULT_DATA_VERSION).unwrap();
+            export_aabb(
+                &wv,
+                [0, 64, 0],
+                [2, 65, 1],
+                &out,
+                DEFAULT_DATA_VERSION,
+            )
+            .unwrap();
             let meta = info(&out).unwrap();
             assert_eq!(meta.size, [3, 2, 2]);
             assert!(meta.blocks >= 1);

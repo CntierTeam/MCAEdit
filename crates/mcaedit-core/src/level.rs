@@ -441,17 +441,20 @@ pub fn info(world: &Path) -> Result<LevelInfo> {
     })
 }
 
+/// Fields to patch on an existing `level.dat` (all optional; unknown tags preserved).
+#[derive(Clone, Debug, Default)]
+pub struct LevelPatchOptions<'a> {
+    pub level_name: Option<&'a str>,
+    pub seed: Option<i64>,
+    pub spawn: Option<[i32; 3]>,
+    pub game_type: Option<i32>,
+    pub data_version: Option<i32>,
+    pub version_name: Option<&'a str>,
+    pub touch_last_played: bool,
+}
+
 /// Patch selected fields on an existing level.dat (preserves unknown tags).
-pub fn update_level_dat(
-    world: &Path,
-    level_name: Option<&str>,
-    seed: Option<i64>,
-    spawn: Option<[i32; 3]>,
-    game_type: Option<i32>,
-    data_version: Option<i32>,
-    version_name: Option<&str>,
-    touch_last_played: bool,
-) -> Result<LevelInfo> {
+pub fn update_level_dat(world: &Path, opts: &LevelPatchOptions<'_>) -> Result<LevelInfo> {
     let path = world.join("level.dat");
     let root_nbt = read_gzip_nbt(&path)?;
     let mut root = nbt_to_json(root_nbt)?;
@@ -460,22 +463,22 @@ pub fn update_level_dat(
         .and_then(|v| v.as_object_mut())
         .ok_or_else(|| Error::msg("level.dat missing Data"))?;
 
-    if let Some(name) = level_name {
+    if let Some(name) = opts.level_name {
         data.insert("LevelName".into(), json!(name));
     }
-    if let Some(gt) = game_type {
+    if let Some(gt) = opts.game_type {
         data.insert("GameType".into(), json!(gt));
     }
-    if let Some([x, y, z]) = spawn {
+    if let Some([x, y, z]) = opts.spawn {
         data.insert("SpawnX".into(), json!(x));
         data.insert("SpawnY".into(), json!(y));
         data.insert("SpawnZ".into(), json!(z));
     }
-    if let Some(dv) = data_version {
+    if let Some(dv) = opts.data_version {
         data.insert("DataVersion".into(), json!(dv));
         if let Some(ver) = data.get_mut("Version").and_then(|v| v.as_object_mut()) {
             ver.insert("Id".into(), json!(dv));
-            if let Some(n) = version_name {
+            if let Some(n) = opts.version_name {
                 ver.insert("Name".into(), json!(n));
             }
         } else {
@@ -483,18 +486,18 @@ pub fn update_level_dat(
                 "Version".into(),
                 json!({
                     "Id": dv,
-                    "Name": version_name.unwrap_or("custom"),
+                    "Name": opts.version_name.unwrap_or("custom"),
                     "Snapshot": false,
                     "Series": "main"
                 }),
             );
         }
-    } else if let Some(n) = version_name {
+    } else if let Some(n) = opts.version_name {
         if let Some(ver) = data.get_mut("Version").and_then(|v| v.as_object_mut()) {
             ver.insert("Name".into(), json!(n));
         }
     }
-    if let Some(s) = seed {
+    if let Some(s) = opts.seed {
         data.insert("RandomSeed".into(), json!(s));
         if let Some(wgs) = data.get_mut("WorldGenSettings").and_then(|v| v.as_object_mut()) {
             wgs.insert("seed".into(), json!(s));
@@ -521,7 +524,7 @@ pub fn update_level_dat(
             }
         }
     }
-    if touch_last_played {
+    if opts.touch_last_played {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -562,14 +565,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         for (mc, dv, modern) in [("26.2", 4903, true), ("1.20.1", 3465, false)] {
             let path = tmp.path().join(mc);
-            let mut opts = WorldCreateOptions::default();
-            opts.path = path.clone();
-            opts.level_name = format!("test-{mc}");
-            opts.seed = 42;
-            opts.spawn = [8, 70, -8];
-            opts.game_type = 0;
-            opts.version = ResolvedVersion::from_mc(mc).unwrap();
-            opts.generator = GeneratorKind::Flat;
+            let opts = WorldCreateOptions {
+                path: path.clone(),
+                level_name: format!("test-{mc}"),
+                seed: 42,
+                spawn: [8, 70, -8],
+                game_type: 0,
+                version: ResolvedVersion::from_mc(mc).unwrap(),
+                generator: GeneratorKind::Flat,
+                ..Default::default()
+            };
             let info = create_world(&opts).unwrap();
             assert_eq!(info.data_version, Some(dv));
             assert_eq!(info.seed, Some(42));
@@ -586,13 +591,12 @@ mod tests {
             // Roundtrip: rewrite LastPlayed / seed
             let again = update_level_dat(
                 &path,
-                Some("renamed"),
-                Some(99),
-                None,
-                None,
-                None,
-                None,
-                true,
+                &LevelPatchOptions {
+                    level_name: Some("renamed"),
+                    seed: Some(99),
+                    touch_last_played: true,
+                    ..Default::default()
+                },
             )
             .unwrap();
             assert_eq!(again.level_name, "renamed");

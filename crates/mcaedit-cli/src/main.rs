@@ -320,6 +320,7 @@ enum LevelCmd {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)] // clap Create carries many PathBuf/String flags
 enum SessionCmd {
     Create {
         #[arg(long)]
@@ -1675,7 +1676,11 @@ fn run() -> Result<()> {
                 let (x1, y1, z1) = parse_xyz_i(&from)?;
                 let (x2, y2, z2) = parse_xyz_i(&to)?;
                 let info = mcaedit_core::structure::export_aabb(
-                    &world, x1, y1, z1, x2, y2, z2, &out, dv,
+                    &world,
+                    [x1, y1, z1],
+                    [x2, y2, z2],
+                    &out,
+                    dv,
                 )?;
                 for line in info.lines() {
                     println!("{line}");
@@ -1702,7 +1707,11 @@ fn run() -> Result<()> {
                 let starts = !no_starts;
                 let references = !no_references;
                 let n = mcaedit_core::structure::clear_structures_in_aabb(
-                    &mut world, x1, y1, z1, x2, y2, z2, starts, references,
+                    &mut world,
+                    [x1, y1, z1],
+                    [x2, y2, z2],
+                    starts,
+                    references,
                 )?;
                 println!("cleared_chunks={n} starts={starts} references={references}");
             }
@@ -1841,13 +1850,15 @@ fn run() -> Result<()> {
                 };
                 let info = mcaedit_core::level::update_level_dat(
                     &world,
-                    level_name.as_deref(),
-                    seed,
-                    spawn,
-                    game_type,
-                    data_version,
-                    version_name.as_deref(),
-                    touch,
+                    &mcaedit_core::level::LevelPatchOptions {
+                        level_name: level_name.as_deref(),
+                        seed,
+                        spawn,
+                        game_type,
+                        data_version,
+                        version_name: version_name.as_deref(),
+                        touch_last_played: touch,
+                    },
                 )?;
                 for line in info.lines() {
                     println!("{line}");

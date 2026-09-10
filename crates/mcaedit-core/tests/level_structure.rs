@@ -1,7 +1,7 @@
 //! level.dat + structure + version regression tests.
 
 use mcaedit_core::blockstate::BlockState;
-use mcaedit_core::level::{self, GeneratorKind, WorldCreateOptions};
+use mcaedit_core::level::{self, GeneratorKind, LevelPatchOptions, WorldCreateOptions};
 use mcaedit_core::mc_version::ResolvedVersion;
 use mcaedit_core::session::{CreateSessionOpts, Session};
 use mcaedit_core::structure::{self, PlaceOptions};
@@ -14,14 +14,16 @@ fn level_dat_roundtrip_two_dataversions() {
     let tmp = TempDir::new().unwrap();
     for (mc, dv) in [("26.2", 4903), ("1.18.2", 2975)] {
         let path = tmp.path().join(mc);
-        let mut opts = WorldCreateOptions::default();
-        opts.path = path.clone();
-        opts.level_name = format!("lv-{mc}");
-        opts.seed = 12345;
-        opts.spawn = [16, 80, -16];
-        opts.game_type = 1;
-        opts.generator = GeneratorKind::Noise;
-        opts.version = ResolvedVersion::from_mc(mc).unwrap();
+        let opts = WorldCreateOptions {
+            path: path.clone(),
+            level_name: format!("lv-{mc}"),
+            seed: 12345,
+            spawn: [16, 80, -16],
+            game_type: 1,
+            generator: GeneratorKind::Noise,
+            version: ResolvedVersion::from_mc(mc).unwrap(),
+            ..Default::default()
+        };
         let info = level::create_world(&opts).unwrap();
         assert_eq!(info.data_version, Some(dv));
         assert_eq!(info.seed, Some(12345));
@@ -33,13 +35,14 @@ fn level_dat_roundtrip_two_dataversions() {
 
         let patched = level::update_level_dat(
             &path,
-            Some("patched"),
-            Some(7),
-            Some([1, 2, 3]),
-            Some(0),
-            None,
-            None,
-            true,
+            &LevelPatchOptions {
+                level_name: Some("patched"),
+                seed: Some(7),
+                spawn: Some([1, 2, 3]),
+                game_type: Some(0),
+                touch_last_played: true,
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(patched.level_name, "patched");
@@ -110,7 +113,7 @@ fn structure_place_undo_and_medium_stress() {
                 )
                 .unwrap();
                 let out = tmp.path().join("box.nbt");
-                structure::export_aabb(&wv, 0, 64, 0, 15, 79, 15, &out, 4903).unwrap();
+                structure::export_aabb(&wv, [0, 64, 0], [15, 79, 15], &out, 4903).unwrap();
                 let meta = structure::info(&out).unwrap();
                 assert_eq!(meta.size, [16, 16, 16]);
 
@@ -153,9 +156,11 @@ fn structure_place_undo_and_medium_stress() {
 fn empty_chunk_preserves_session_data_version() {
     let tmp = TempDir::new().unwrap();
     let world = tmp.path().join("w");
-    let mut opts = WorldCreateOptions::default();
-    opts.path = world.clone();
-    opts.version = ResolvedVersion::from_mc("1.20.1").unwrap();
+    let opts = WorldCreateOptions {
+        path: world.clone(),
+        version: ResolvedVersion::from_mc("1.20.1").unwrap(),
+        ..Default::default()
+    };
     level::create_world(&opts).unwrap();
     let cwd = tmp.path().to_path_buf();
     let mut session = Session::create(&cwd, &world, "overworld", Some("dv".into()), None).unwrap();
