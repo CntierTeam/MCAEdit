@@ -67,25 +67,45 @@ mcaedit edit brush sphere --at -4,72,-4 --radius 5 --block minecraft:glass
 
 **实务**：给用户/脚本示例优先写 `=`；自己代跑两种都行。chunk 坐标同理：`--from=-2,-2 --to=1,1`。
 
-## Agent 易踩坑（v0.8.2–0.9.0 实务）
+## view 渲染（v0.10.0 原版风格）— Agent 必读
 
-### `fix-light` 只改光（≥0.8.2）
+**不要再按旧文档假设「只画立方体 / 只有六面 shade / 无 BlockLight」**。自 **0.10.0** 起，`view screenshot` 与 `view preview` / `preview` 走同一管线：
 
-`edit fix-light` **只重算 sky/block light**（并维护 `isLightOn`），**不**改方块、调色板、实体。v0.8.2 已修「修光把编辑方块冲掉」的 bug。
+| 维度 | 现实（0.10.0） | 旧误解（≤0.9.x / 过时 skill） |
+|------|----------------|-------------------------------|
+| 几何 | 从 client jar 读 **blockstates + models**（variants / multipart → elements），楼梯/台阶/栅栏/门/交叉植物等按模型出面 | 「cubes-only」为主 |
+| 贴图 | element UV 最近邻采样 `textures/block`；动画 PNG **仅首帧** | 仅调色板实色 / 启发式 top-side-bottom 贴图为主 |
+| 光照 | 采样 section **`BlockLight`/`SkyLight`** × lightmap × 六面 face shade（+ 简化顶点 AO） | 只有 face shade / 无室内暗度 |
+| 回退 | 缺 jar / `--no-textures` / 模型解析失败 → **调色板立方体**（不崩溃） | — |
 
-- **不要**因为怕抹掉建筑而跳过 fix-light（在 ≥0.8.2 / 0.9.0 上该跑就跑）。
-- `--seed` / `--dim` **仅定维度高度范围**，**不会**触发 `gen`。
+### jar / 日志（核对 CLI 输出 `textures=`）
+
+- 指定：`--minecraft <jar|versions/<ver>目录>` 或 `--assets-jar`；环境变量 `MCAEDIT_MINECRAFT_JAR` / `MCAEDIT_ASSETS_JAR`；可省略 → 自动探测 **26.2**。
+- 成功：`textures=models+textures jar path=...`（blockstate/model + 贴图）。
+- 回退：`textures=palette reason=no-textures|jar-not-found|jar-open-failed|...`。
+- **不要**再把 `textures=jar path=...`（无 `models+textures` 前缀）当成 screenshot/preview 的主路径；那是旧 atlas-only 标签。
+
+### 截图前务必 `fix-light`
+
+室内/火把/洞穴暗度依赖 chunk 光数据。编辑后若未修光，截图会显得「全亮或光错」。**验收建筑截图前**对相关 chunk 跑：
 
 ```bash
-mcaedit edit fix-light --from 0,0 --to 3,3 --seed 42 --dim overworld
 mcaedit edit fix-light --from=-2,-2 --to=1,1 --dim overworld
+mcaedit view screenshot --from=-10,55,-55 --to=45,100,12 --out /tmp/shot.png \
+  --camera=-28,105,-78 --look=16,78,-22
 ```
 
-### 截图贴图 / 大体积
+### 诚实缺口（仍缺）
 
-- `--minecraft <jar|versions/dir>` 或 `MCAEDIT_MINECRAFT_JAR` / `MCAEDIT_ASSETS_JAR`；可省略，自动探测 26.2。
-- 日志：`models+textures jar path=...`（blockstate/model + 贴图成功）vs `textures=jar path=...`（仅贴图探测）vs `palette reason=no-textures|jar-not-found|...`（回退实色，不崩溃）。
-- **无 48³ 硬上限**（那是 `inspect select` / preview 自动裁的旧习惯）。大 AABB 用 `--max-cells` 或 `MCAEDIT_VIEW_MAX_CELLS`（默认 **2000000**）。超大体积 mesh 会慢，可先缩小选区或降分辨率。
+- 无 CTM（相连纹理）
+- 无流体曲面（水/岩浆硬编码流体几何未做）
+- 无实体方块特殊渲染（箱子/床/旗帜等）
+- 动画贴图仅首帧
+- AO 为廉价三邻域遮挡，非完整原版邻域 AO
+
+### 大体积
+
+- **无 48³ 硬上限**（那是 `inspect select` / preview 未给 AABB 时自动裁的习惯）。大 AABB 用 `--max-cells` 或 `MCAEDIT_VIEW_MAX_CELLS`（默认 **2000000**）。超大 mesh 会慢，可先缩小选区或降分辨率。
 
 ```bash
 mcaedit view screenshot --from=-10,55,-55 --to=45,100,12 --out /tmp/taihe.png \
@@ -93,6 +113,21 @@ mcaedit view screenshot --from=-10,55,-55 --to=45,100,12 --out /tmp/taihe.png \
   --minecraft /other/Minecraft/.minecraft/versions/26.2/26.2.jar \
   --max-cells 4000000
 # 或：export MCAEDIT_VIEW_MAX_CELLS=4000000
+```
+
+## Agent 易踩坑（0.8.2–0.10.0 实务）
+
+### `fix-light` 只改光（≥0.8.2；对截图更重要）
+
+`edit fix-light` **只重算 sky/block light**（并维护 `isLightOn`），**不**改方块、调色板、实体。v0.8.2 已修「修光把编辑方块冲掉」的 bug。
+
+- **不要**因为怕抹掉建筑而跳过 fix-light（≥0.8.2 该跑就跑）。
+- **0.10.0**：view 会采样 BlockLight/SkyLight → 截图/预览前更该跑。
+- `--seed` / `--dim` **仅定维度高度范围**，**不会**触发 `gen`。
+
+```bash
+mcaedit edit fix-light --from 0,0 --to 3,3 --seed 42 --dim overworld
+mcaedit edit fix-light --from=-2,-2 --to=1,1 --dim overworld
 ```
 
 ### `world create` vs `session create --bootstrap`
@@ -170,7 +205,7 @@ mcaedit edit brush sphere --at 0,70,0 --radius 5 --block minecraft:glass --mask 
 mcaedit edit brush biome --at 0,70,0 --radius 8 --biome minecraft:desert
 mcaedit edit smooth3d --from 0,60,0 --to 15,80,15 --iterations 2 --kernel 1
 mcaedit edit tick --from 0,0 --to 0,0 --rounds 20 --speed 3
-mcaedit edit fix-light --from 0,0 --to 0,0 --dim overworld
+mcaedit edit fix-light --from 0,0 --to 0,0 --dim overworld   # 截图前建议修光（BlockLight/SkyLight）
 
 # 原版结构 .nbt（≠ .schem）
 mcaedit structure export --from 0,64,0 --to 7,70,7 --out /tmp/hut.nbt
@@ -179,15 +214,13 @@ mcaedit structure list --world /tmp/newworld
 mcaedit inspect structures --cx 0 --cz 0
 mcaedit structure clear-refs --from 0,0,0 --to 63,0,63
 
+# 0.10.0：models+textures（可省略 --minecraft，自动探测）；看日志 textures=models+textures jar path=...
 mcaedit view screenshot --from 0,64,0 --to 7,66,7 --out /tmp/shot.png --width 640 --height 360
 # 大体积 + 负坐标验收（推荐 = 形式）
 mcaedit view screenshot --from=-10,55,-55 --to=45,100,12 --out /tmp/taihe.png \
   --width 1600 --height 900 --camera=-28,105,-78 --look=16,78,-22 \
   --minecraft /other/Minecraft/.minecraft/versions/26.2/26.2.jar
-# 使用本机 Minecraft 26.2 client jar 方块贴图（可省略，自动探测）
-mcaedit view screenshot --from 0,64,0 --to 7,66,7 --out /tmp/shot.png \
-  --minecraft ~/.minecraft/versions/26.2/26.2.jar
-# 另开终端：实时建造预览窗口（需 DISPLAY/Wayland）
+# 另开终端：实时建造预览（同模型/光照管线；需 DISPLAY/Wayland）
 mcaedit view preview --from 0,64,0 --to 15,80,15 --watch 400
 # 或：mcaedit preview --watch 500 --assets-jar /path/to/26.2.jar
 mcaedit history list
@@ -214,10 +247,10 @@ mcaedit commit
 | 剪贴板 | `edit copy\|cut\|paste --at\|rotate --yaw\|flip --axis` |
 | 单方块 / section / 实体 | `edit set-block`；`set-section`；`edit entity spawn\|rm\|set` |
 | **地形生成** | `edit gen --seed N --dim overworld\|nether\|end --from cx,cz --to cx,cz` |
-| **修光照** | `edit fix-light --from cx,cz --to cx,cz [--seed] [--dim]`（只重算 light；≥0.8.2 不毁方块） |
+| **修光照** | `edit fix-light --from cx,cz --to cx,cz [--seed] [--dim]`（只重算 light；≥0.8.2 不毁方块；**0.10 截图前建议跑**） |
 | **离线 tick** | `edit tick --from cx,cz --to cx,cz --rounds N --speed N`（别名 `tick-participate`） |
-| **离线截图** | `view screenshot --from/--to [--out] [--width] [--height] [--camera] [--look] [--minecraft\|--assets-jar] [--max-cells] [--no-textures]` |
-| **实时预览** | `view preview` / `preview`（`--from/--to` 可选，`--watch` 轮询 ms；`--minecraft` / `--assets-jar`；需显示器） |
+| **离线截图** | `view screenshot`：blockstates/models/贴图 + BlockLight/SkyLight；`--minecraft\|--assets-jar` / `--max-cells` / `--no-textures`；日志 `textures=models+textures jar path=...` 或 `palette reason=...` |
+| **实时预览** | `view preview` / `preview`（同管线；`--watch`；需显示器） |
 | 模板 | `template save\|list\|show\|paste\|rm\|export-schem\|import-schem` |
 | **`.schem`** | `schem export\|import\|info`（Sponge v2 写出；读 v2/v3） |
 | **结构 `.nbt`** | `structure list\|info\|place\|export\|import\|clear-refs`（原版 structure；place 可 `--rotation` / `--mirror`） |
@@ -252,25 +285,22 @@ mcaedit edit smooth3d --from 0,60,0 --to 31,80,31 --iterations 3 --kernel 1 --so
 # 离线 tick（一等公民）：步进 block_ticks/fluid_ticks + 近似 random-tick 生长（可 undo）
 mcaedit edit tick --from 0,0 --to 3,3 --rounds 40 --speed 3
 
-# 实时建造预览（另开终端；需 DISPLAY 或 Wayland；与 edit 并行看进度）
+# 实时建造预览（另开终端；需 DISPLAY/Wayland；与 screenshot 同模型/光照管线）
 mcaedit view preview --from 0,64,0 --to 31,80,31 --watch 400
 # 或：mcaedit preview --watch 500
 
-# Minecraft 26.2 方块贴图（client jar）；缺 jar 时自动回退调色板实色，不崩溃
+# Minecraft 26.2 client jar：blockstates + models + textures（可省略，自动探测）
 export MCAEDIT_MINECRAFT_JAR=~/.minecraft/versions/26.2/26.2.jar
 # 或：export MCAEDIT_ASSETS_JAR=...
+mcaedit edit fix-light --from 0,0 --to 0,0 --dim overworld   # 截图前修光
 mcaedit view screenshot --from 0,64,0 --to 15,80,15 --out /tmp/shot.png --minecraft ~/.minecraft/versions/26.2
 mcaedit view preview --assets-jar ~/.minecraft/versions/26.2/26.2.jar
-# 强制纯色：--no-textures
+# 强制纯色立方体：--no-textures → textures=palette reason=no-textures
 ```
 
 自动探测路径（版本默认 **26.2**）：`/other/Minecraft/.minecraft/versions/26.2/26.2.jar`（buildTest 机）、`~/.minecraft/versions/26.2/26.2.jar`、Flatpak Mojang、Prism/PolyMC/MultiMC、`%APPDATA%/.minecraft/...`、HMCL 等。`--minecraft` 可指向 jar 或 `versions/26.2/` 目录。
 环境变量：`MCAEDIT_MINECRAFT_JAR` / `MCAEDIT_ASSETS_JAR`；大截图体积：`MCAEDIT_VIEW_MAX_CELLS`（默认 2000000）。
-日志：`models+textures jar path=...`（blockstate/model + 贴图成功）或 `palette reason=no-textures|jar-not-found|...`。
-
-**v0.10 渲染**：从 client jar 加载 `blockstates` + `models/block`（variants / multipart），按 element UV 贴图；采样 section `BlockLight`/`SkyLight` × lightmap × 六面 shade，并做廉价顶点 AO。缺 jar 时仍回退调色板立方体。
-
-仍缺 / 诚实限制：CTM、流体曲面、实体方块特殊渲染、完整邻域 AO（仅简化）、动画贴图仅首帧、水/岩浆硬编码流体几何未做。
+CLI 日志字段：`textures=models+textures jar path=...` 或 `textures=palette reason=...`（详见上文「view 渲染」专节）。
 
 ## Linear region
 
@@ -315,8 +345,7 @@ curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/ins
 - 完整服务端 random-tick（光照/湿度/邻居更新/蜜蜂授粉等）；离线 tick 覆盖作物 age、甘蔗/仙人掌/竹子向上长、草/菌丝扩散、farmland 湿度递减，以及 scheduled tick 队列步进（到期条目移除，不执行完整方块行为）
 - 生物群系分辨率低于 4×4×4（MCA section biomes 固有限制）
 - Linear：支持读/写 v1 与 v2；工作副本仍以 Anvil 编辑
-- view：依赖本机 Minecraft client jar；加载 blockstates/models + 贴图；缺 jar 时调色板立方体。无 CTM / 流体曲面 / 实体方块特殊模型；动画贴图仅首帧；AO 为简化顶点遮挡
-- view 光照：采样 chunk BlockLight/SkyLight × lightmap × 六面 shade（需先 `fix-light` 才有可信室内暗度）
+- **view（0.10.0）**：从 client jar 加载 blockstates + models + 贴图，按 model elements 出几何（非 cubes-only）；光照 = BlockLight/SkyLight × lightmap × face shade + 简化 AO。缺 jar / `--no-textures` → 调色板立方体。仍无 CTM / 流体曲面 / 实体方块特殊渲染；动画仅首帧；AO 非完整邻域。验收截图前先 `fix-light`
 - **structure place**：稠密体积上限 64³；多 palette 结构只用第一套；旋转/镜像改方块坐标，**不**旋转方块 state（如楼梯朝向）
 - **structure clear-refs**：清 chunk `structures` starts/References，**不入** history undo
 - **level.dat**：写入常用字段（LevelName/Seed/Spawn/GameType/WorldGenSettings/Version…）；不保证与所有第三方服务端 sidecar 全集一致；现代布局额外写 `world_gen_settings.dat`
