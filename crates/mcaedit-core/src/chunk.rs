@@ -19,19 +19,38 @@ pub struct ChunkData {
 
 impl ChunkData {
     pub fn empty(chunk_x: i32, chunk_z: i32) -> Self {
+        Self::empty_with_version(chunk_x, chunk_z, crate::mc_version::DEFAULT_DATA_VERSION)
+    }
+
+    pub fn empty_with_version(chunk_x: i32, chunk_z: i32, data_version: i32) -> Self {
         let mut root = serde_json::Map::new();
-        root.insert("DataVersion".into(), JsonValue::from(4556)); // MC 26.x-ish
+        root.insert("DataVersion".into(), JsonValue::from(data_version));
         root.insert("xPos".into(), JsonValue::from(chunk_x));
         root.insert("zPos".into(), JsonValue::from(chunk_z));
         root.insert("yPos".into(), JsonValue::from(-4));
         root.insert("Status".into(), JsonValue::String("minecraft:full".into()));
         root.insert("sections".into(), JsonValue::Array(Vec::new()));
         root.insert("block_entities".into(), JsonValue::Array(Vec::new()));
+        // Empty structure starts/refs so tools can clear/set without creating the tag.
+        let mut structures = serde_json::Map::new();
+        structures.insert("starts".into(), JsonValue::Object(serde_json::Map::new()));
+        structures.insert(
+            "References".into(),
+            JsonValue::Object(serde_json::Map::new()),
+        );
+        root.insert("structures".into(), JsonValue::Object(structures));
         Self {
             root: JsonValue::Object(root),
             chunk_x,
             chunk_z,
         }
+    }
+
+    pub fn data_version(&self) -> Option<i32> {
+        self.root
+            .get("DataVersion")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32)
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {

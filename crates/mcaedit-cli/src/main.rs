@@ -61,6 +61,21 @@ enum Commands {
         #[command(subcommand)]
         cmd: SchemCmd,
     },
+    /// Vanilla structure template (.nbt) import / export / place
+    Structure {
+        #[command(subcommand)]
+        cmd: StructureCmd,
+    },
+    /// Create world skeleton / manage level.dat
+    World {
+        #[command(subcommand)]
+        cmd: WorldCmd,
+    },
+    /// Read / patch level.dat
+    Level {
+        #[command(subcommand)]
+        cmd: LevelCmd,
+    },
     View {
         #[command(subcommand)]
         cmd: ViewCmd,
@@ -164,6 +179,147 @@ enum SchemCmd {
 }
 
 #[derive(Subcommand, Debug)]
+enum StructureCmd {
+    /// List structure .nbt under world generated/ / datapacks/ / structures/
+    List {
+        #[arg(long)]
+        world: Option<PathBuf>,
+    },
+    /// Show structure .nbt metadata
+    Info {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Place / import structure .nbt into the session at origin
+    Place {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long, help = "x,y,z")]
+        at: String,
+        /// Rotate yaw degrees: 0/90/180/270
+        #[arg(long, default_value_t = 0)]
+        rotation: i32,
+        /// Mirror axis: x or z
+        #[arg(long)]
+        mirror: Option<String>,
+        /// Skip entities in the structure
+        #[arg(long)]
+        no_entities: bool,
+    },
+    /// Export AABB to vanilla structure .nbt
+    Export {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long = "data-version")]
+        data_version: Option<i32>,
+    },
+    /// Import .nbt as a named template (dense)
+    Import {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        name: String,
+    },
+    /// Clear chunk structure starts/references overlapping AABB
+    ClearRefs {
+        #[arg(long, help = "x,y,z")]
+        from: String,
+        #[arg(long, help = "x,y,z")]
+        to: String,
+        #[arg(long = "no-starts")]
+        no_starts: bool,
+        #[arg(long = "no-references")]
+        no_references: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WorldCmd {
+    /// Create empty world dirs + level.dat (default MC 26.2)
+    Create {
+        #[arg(long)]
+        path: PathBuf,
+        #[arg(long = "name", default_value = "world")]
+        level_name: String,
+        #[arg(long, default_value_t = 0)]
+        seed: i64,
+        #[arg(long, help = "x,y,z", default_value = "0,64,0")]
+        spawn: String,
+        /// 0=survival 1=creative 2=adventure 3=spectator
+        #[arg(long = "game-type", default_value_t = 1)]
+        game_type: i32,
+        /// noise | flat
+        #[arg(long, default_value = "noise")]
+        generator: String,
+        /// e.g. 26.2, 1.21.4, 1.20.1, 1.18.2
+        #[arg(long = "mc", default_value = "26.2")]
+        mc: String,
+        #[arg(long = "data-version")]
+        data_version: Option<i32>,
+        /// anvil | linear
+        #[arg(long = "region-format", default_value = "anvil")]
+        region_format: String,
+        #[arg(long)]
+        all_dims: bool,
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum LevelCmd {
+    /// Show level.dat summary
+    Info {
+        #[arg(long)]
+        world: PathBuf,
+    },
+    /// Create or overwrite level.dat (and modern sidecars when applicable)
+    Write {
+        #[arg(long)]
+        world: PathBuf,
+        #[arg(long = "name")]
+        level_name: Option<String>,
+        #[arg(long)]
+        seed: Option<i64>,
+        #[arg(long, help = "x,y,z")]
+        spawn: Option<String>,
+        #[arg(long = "game-type")]
+        game_type: Option<i32>,
+        #[arg(long = "mc")]
+        mc: Option<String>,
+        #[arg(long = "data-version")]
+        data_version: Option<i32>,
+        #[arg(long, default_value = "noise")]
+        generator: String,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Patch fields on existing level.dat
+    Patch {
+        #[arg(long)]
+        world: PathBuf,
+        #[arg(long = "name")]
+        level_name: Option<String>,
+        #[arg(long)]
+        seed: Option<i64>,
+        #[arg(long, help = "x,y,z")]
+        spawn: Option<String>,
+        #[arg(long = "game-type")]
+        game_type: Option<i32>,
+        #[arg(long = "data-version")]
+        data_version: Option<i32>,
+        #[arg(long = "version-name")]
+        version_name: Option<String>,
+        #[arg(long)]
+        touch: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum SessionCmd {
     Create {
         #[arg(long)]
@@ -175,6 +331,23 @@ enum SessionCmd {
         /// Collaboration label (agent / user)
         #[arg(long)]
         label: Option<String>,
+        /// Create level.dat + region dirs if world is empty / missing
+        #[arg(long)]
+        bootstrap: bool,
+        #[arg(long = "name")]
+        level_name: Option<String>,
+        #[arg(long)]
+        seed: Option<i64>,
+        #[arg(long = "mc", default_value = "26.2")]
+        mc: String,
+        #[arg(long = "data-version")]
+        data_version: Option<i32>,
+        #[arg(long, default_value = "noise")]
+        generator: String,
+        #[arg(long = "region-format", default_value = "anvil")]
+        region_format: String,
+        #[arg(long)]
+        force: bool,
     },
     /// List all sessions (multi-session collaboration)
     List,
@@ -231,6 +404,13 @@ enum InspectCmd {
         near: Option<String>,
         #[arg(long, default_value_t = 32.0)]
         r: f64,
+    },
+    /// Chunk structure starts / References summary
+    Structures {
+        #[arg(long)]
+        cx: i32,
+        #[arg(long)]
+        cz: i32,
     },
 }
 
@@ -715,8 +895,32 @@ fn run() -> Result<()> {
                 dim,
                 id,
                 label,
+                bootstrap,
+                level_name,
+                seed,
+                mc,
+                data_version,
+                generator,
+                region_format,
+                force,
             } => {
-                let s = Session::create(&cwd, &world, &dim, id, label)?;
+                let version = mcaedit_core::mc_version::ResolvedVersion::resolve(
+                    Some(&mc),
+                    data_version,
+                )?;
+                let opts = mcaedit_core::CreateSessionOpts {
+                    bootstrap,
+                    force_level: force,
+                    level_name,
+                    seed,
+                    version: Some(version),
+                    generator: Some(mcaedit_core::level::GeneratorKind::parse(&generator)?),
+                    region_format: Some(mcaedit_core::level::RegionFormat::parse(
+                        &region_format,
+                    )?),
+                    data_version,
+                };
+                let s = Session::create_with_opts(&cwd, &world, &dim, id, label, opts)?;
                 print_session(&s, cli.json);
             }
             SessionCmd::List => {
@@ -830,6 +1034,13 @@ fn run() -> Result<()> {
                     println!("entities n={}", ents.len());
                     for e in ents.iter().take(50) {
                         println!("{}", e.brief());
+                    }
+                }
+                InspectCmd::Structures { cx, cz } => {
+                    let chunk = world.load_chunk(cx, cz)?;
+                    println!("chunk={cx},{cz} DataVersion={:?}", chunk.data_version());
+                    for line in mcaedit_core::structure::chunk_structure_summary(&chunk) {
+                        println!("{line}");
                     }
                 }
             }
@@ -1376,6 +1587,272 @@ fn run() -> Result<()> {
                         println!("{line}");
                     }
                 }
+            }
+        },
+        Commands::Structure { cmd } => match cmd {
+            StructureCmd::List { world } => {
+                let world_path = if let Some(w) = world {
+                    w
+                } else {
+                    open_session(&cwd, cli.session.as_deref())?
+                        .meta
+                        .source_world
+                        .clone()
+                };
+                let list = mcaedit_core::structure::list_in_world(&world_path)?;
+                println!("structures n={}", list.len());
+                for p in list {
+                    println!("{}", p.display());
+                }
+            }
+            StructureCmd::Info { file } => {
+                let info = mcaedit_core::structure::info(&file)?;
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "path": info.path,
+                            "size": info.size,
+                            "blocks": info.blocks,
+                            "entities": info.entities,
+                            "palette": info.palette,
+                            "DataVersion": info.data_version,
+                            "author": info.author,
+                        })
+                    );
+                } else {
+                    for line in info.lines() {
+                        println!("{line}");
+                    }
+                }
+            }
+            StructureCmd::Place {
+                file,
+                at,
+                rotation,
+                mirror,
+                no_entities,
+            } => {
+                let mut s = open_session(&cwd, cli.session.as_deref())?;
+                let mut world = WorldView::new(&mut s);
+                let (x, y, z) = parse_xyz_i(&at)?;
+                let mirror = match mirror.as_deref() {
+                    None => None,
+                    Some("x") | Some("X") => Some('x'),
+                    Some("z") | Some("Z") => Some('z'),
+                    Some(other) => bail!("mirror must be x or z, got `{other}`"),
+                };
+                let action = mcaedit_core::structure::place(
+                    &mut world,
+                    &file,
+                    x,
+                    y,
+                    z,
+                    mcaedit_core::structure::PlaceOptions {
+                        rotation,
+                        mirror,
+                        include_entities: !no_entities,
+                    },
+                )?;
+                println!(
+                    "action={} changed={} dirty=true desc={}",
+                    action.id,
+                    action.changed_count(),
+                    action.description
+                );
+            }
+            StructureCmd::Export {
+                from,
+                to,
+                out,
+                data_version,
+            } => {
+                let mut s = open_session(&cwd, cli.session.as_deref())?;
+                let dv = data_version
+                    .or(s.meta.data_version)
+                    .unwrap_or(mcaedit_core::mc_version::DEFAULT_DATA_VERSION);
+                let world = WorldView::new(&mut s);
+                let (x1, y1, z1) = parse_xyz_i(&from)?;
+                let (x2, y2, z2) = parse_xyz_i(&to)?;
+                let info = mcaedit_core::structure::export_aabb(
+                    &world, x1, y1, z1, x2, y2, z2, &out, dv,
+                )?;
+                for line in info.lines() {
+                    println!("{line}");
+                }
+            }
+            StructureCmd::Import { file, name } => {
+                let tpl = mcaedit_core::structure::import_to_template(&file, &name)?;
+                let path = tpl.save_to_disk(&cwd)?;
+                for line in tpl.brief_lines() {
+                    println!("{line}");
+                }
+                println!("saved={}", path.display());
+            }
+            StructureCmd::ClearRefs {
+                from,
+                to,
+                no_starts,
+                no_references,
+            } => {
+                let mut s = open_session(&cwd, cli.session.as_deref())?;
+                let mut world = WorldView::new(&mut s);
+                let (x1, y1, z1) = parse_xyz_i(&from)?;
+                let (x2, y2, z2) = parse_xyz_i(&to)?;
+                let starts = !no_starts;
+                let references = !no_references;
+                let n = mcaedit_core::structure::clear_structures_in_aabb(
+                    &mut world, x1, y1, z1, x2, y2, z2, starts, references,
+                )?;
+                println!("cleared_chunks={n} starts={starts} references={references}");
+            }
+        },
+        Commands::World { cmd } => match cmd {
+            WorldCmd::Create {
+                path,
+                level_name,
+                seed,
+                spawn,
+                game_type,
+                generator,
+                mc,
+                data_version,
+                region_format,
+                all_dims,
+                force,
+            } => {
+                let (sx, sy, sz) = parse_xyz_i(&spawn)?;
+                let version =
+                    mcaedit_core::mc_version::ResolvedVersion::resolve(Some(&mc), data_version)?;
+                let opts = mcaedit_core::level::WorldCreateOptions {
+                    path,
+                    level_name,
+                    seed,
+                    spawn: [sx, sy, sz],
+                    game_type,
+                    generator: mcaedit_core::level::GeneratorKind::parse(&generator)?,
+                    version,
+                    region_format: mcaedit_core::level::RegionFormat::parse(&region_format)?,
+                    all_dims,
+                    force,
+                };
+                let info = mcaedit_core::level::create_world(&opts)?;
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "path": info.path,
+                            "LevelName": info.level_name,
+                            "Seed": info.seed,
+                            "Spawn": info.spawn,
+                            "GameType": info.game_type,
+                            "DataVersion": info.data_version,
+                            "Version.Name": info.version_name,
+                            "modern_layout": info.modern_layout,
+                        })
+                    );
+                } else {
+                    for line in info.lines() {
+                        println!("{line}");
+                    }
+                    println!("created=true");
+                }
+            }
+        },
+        Commands::Level { cmd } => match cmd {
+            LevelCmd::Info { world } => {
+                let info = mcaedit_core::level::info(&world)?;
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "path": info.path,
+                            "LevelName": info.level_name,
+                            "Seed": info.seed,
+                            "Spawn": info.spawn,
+                            "GameType": info.game_type,
+                            "DataVersion": info.data_version,
+                            "Version.Name": info.version_name,
+                            "LastPlayed": info.last_played,
+                            "generator": info.generator,
+                            "modern_layout": info.modern_layout,
+                        })
+                    );
+                } else {
+                    for line in info.lines() {
+                        println!("{line}");
+                    }
+                }
+            }
+            LevelCmd::Write {
+                world,
+                level_name,
+                seed,
+                spawn,
+                game_type,
+                mc,
+                data_version,
+                generator,
+                force,
+            } => {
+                let version = mcaedit_core::mc_version::ResolvedVersion::resolve(
+                    mc.as_deref(),
+                    data_version,
+                )?;
+                let spawn = if let Some(s) = spawn {
+                    let (x, y, z) = parse_xyz_i(&s)?;
+                    [x, y, z]
+                } else {
+                    [0, 64, 0]
+                };
+                let opts = mcaedit_core::level::WorldCreateOptions {
+                    path: world,
+                    level_name: level_name.unwrap_or_else(|| "world".into()),
+                    seed: seed.unwrap_or(0),
+                    spawn,
+                    game_type: game_type.unwrap_or(1),
+                    generator: mcaedit_core::level::GeneratorKind::parse(&generator)?,
+                    version,
+                    region_format: mcaedit_core::level::RegionFormat::Anvil,
+                    all_dims: false,
+                    force,
+                };
+                let info = mcaedit_core::level::create_world(&opts)?;
+                for line in info.lines() {
+                    println!("{line}");
+                }
+                println!("written=true");
+            }
+            LevelCmd::Patch {
+                world,
+                level_name,
+                seed,
+                spawn,
+                game_type,
+                data_version,
+                version_name,
+                touch,
+            } => {
+                let spawn = if let Some(s) = spawn {
+                    let (x, y, z) = parse_xyz_i(&s)?;
+                    Some([x, y, z])
+                } else {
+                    None
+                };
+                let info = mcaedit_core::level::update_level_dat(
+                    &world,
+                    level_name.as_deref(),
+                    seed,
+                    spawn,
+                    game_type,
+                    data_version,
+                    version_name.as_deref(),
+                    touch,
+                )?;
+                for line in info.lines() {
+                    println!("{line}");
+                }
+                println!("patched=true");
             }
         },
         Commands::View { cmd } => {

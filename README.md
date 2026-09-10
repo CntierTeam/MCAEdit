@@ -4,7 +4,7 @@ Offline Minecraft Anvil (`.mca`) editor CLI for LLMs — **GPL-3.0**（含地形
 
 仓库：[CntierTeam/MCAEdit](https://github.com/CntierTeam/MCAEdit)
 
-Flow: `session create` → `inspect` / `edit` / `view screenshot` / **`view preview`**（区域编辑 + **gen / fix-light / tick**）→ `history` → `commit`
+Flow: `world create` / `session create [--bootstrap]` → `inspect` / `edit` / `structure` / `view screenshot` / **`view preview`**（区域编辑 + **gen / fix-light / tick**）→ `history` → `commit`
 
 本仓库同时提供 **Codex Skill**（`$mcaedit`）：**操作员代跑 / execute-first**——在 shell 直接跑 `mcaedit`（session / inspect / edit / commit），不是只拼命令。
 
@@ -32,7 +32,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Force
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/install.sh \
-  | bash -s -- --version v0.6.2 --force
+  | bash -s -- --version v0.8.0 --force
 ./scripts/install.sh --from-source --symlink-skill --force
 ./scripts/install.sh --uninstall
 ```
@@ -76,9 +76,30 @@ mcaedit --session demo edit tick --from 0,0 --to 3,3 --rounds 40 --speed 3
 产物：`mcaedit-<target>.tar.gz`、`mcaedit-skill.tar.gz`、`install.sh` / `install.ps1`。
 
 ```bash
-git tag v0.6.2
-git push origin v0.6.2
+git tag v0.8.0
+git push origin v0.8.0
 ```
+
+## level.dat / 新建世界 / 结构
+
+```bash
+# 默认 Minecraft 26.2（DataVersion 4903）；也可用 --mc 1.21.4|1.20.1|1.18.2 或裸 DataVersion
+mcaedit world create --path ./myworld --name Demo --seed 42 --mc 26.2 --generator flat
+mcaedit level info --world ./myworld
+mcaedit level patch --world ./myworld --spawn 0,64,0 --game-type 1 --touch
+
+# 空目录开 session 时自动建 level.dat + region/
+mcaedit session create --world ./myworld --id demo --bootstrap --mc 26.2 --seed 42
+
+# 原版结构 .nbt（与 Sponge .schem 不同）
+mcaedit --session demo structure export --from 0,64,0 --to 7,70,7 --out hut.nbt
+mcaedit --session demo structure place --file hut.nbt --at 32,64,32 --rotation 90
+mcaedit --session demo structure list --world ./myworld
+mcaedit --session demo inspect structures --cx 2 --cz 2
+mcaedit --session demo structure clear-refs --from 0,0,0 --to 63,0,63
+```
+
+支持的 `--mc` 别名：`26.2=4903`，`1.21.11=4671`，`1.21.10=4556`，`1.21.4=4189`，`1.21.1=3955`，`1.21=3738`，`1.20.4=3700`，`1.20.1=3465`，`1.20=3463`，`1.19.4=3337`，`1.18.2=2975`。
 
 ## Region edits
 

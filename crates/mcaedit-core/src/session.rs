@@ -16,9 +16,25 @@ pub struct SessionMeta {
     pub created_at: String,
     pub dirty: bool,
     pub next_action_hint: u64,
-    /// Collaboration label (e.g. agent / user name)
+    /// Collaboration label (agent / user)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Preferred DataVersion for newly created empty chunks (from level.dat / bootstrap).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_version: Option<i32>,
+}
+
+/// Options for `session create` when bootstrapping an empty world.
+#[derive(Clone, Debug, Default)]
+pub struct CreateSessionOpts {
+    pub bootstrap: bool,
+    pub force_level: bool,
+    pub level_name: Option<String>,
+    pub seed: Option<i64>,
+    pub version: Option<crate::mc_version::ResolvedVersion>,
+    pub generator: Option<crate::level::GeneratorKind>,
+    pub region_format: Option<crate::level::RegionFormat>,
+    pub data_version: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -55,16 +71,85 @@ impl Session {
         id: Option<String>,
         label: Option<String>,
     ) -> Result<Self> {
-        let source_world = source_world
-            .canonicalize()
-            .map_err(|e| Error::msg(format!("world path: {e}")))?;
+        Self::create_with_opts(
+            cwd,
+            source_world,
+            dim,
+            id,
+            label,
+            CreateSessionOpts::default(),
+        )
+    }
+
+    pub fn create_with_opts(
+        cwd: &Path,
+        source_world: &Path,
+        dim: &str,
+        id: Option<String>,
+        label: Option<String>,
+        opts: CreateSessionOpts,
+    ) -> Result<Self> {
+        let source_world = if source_world.exists() {
+            source_world
+                .canonicalize()
+                .map_err(|e| Error::msg(format!("world path: {e}")))?
+        } else if opts.bootstrap {
+            fs::create_dir_all(source_world)?;
+            source_world
+                .canonicalize()
+                .map_err(|e| Error::msg(format!("world path: {e}")))?
+        } else {
+            return Err(Error::msg(format!(
+                "world path missing: {} (pass --bootstrap to create)",
+                source_world.display()
+            )));
+        };
+
         let region_dir = dim_region_dir(&source_world, dim);
+        let mut data_version = opts.data_version;
+        if opts.bootstrap || crate::level::needs_bootstrap(&source_world) {
+            if !region_dir.exists() || opts.bootstrap {
+                let mut create = crate::level::WorldCreateOptions::default();
+                create.path = source_world.clone();
+                create.level_name = opts
+                    .level_name
+                    .clone()
+                    .unwrap_or_else(|| {
+                        source_world
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("world")
+                            .to_string()
+                    });
+                if let Some(seed) = opts.seed {
+                    create.seed = seed;
+                }
+                if let Some(v) = opts.version.clone() {
+                    create.version = v;
+                }
+                if let Some(g) = opts.generator {
+                    create.generator = g;
+                }
+                if let Some(fmt) = opts.region_format {
+                    create.region_format = fmt;
+                }
+                create.force = opts.force_level || !source_world.join("level.dat").exists();
+                let info = crate::level::create_world(&create)?;
+                data_version = data_version.or(info.data_version);
+            }
+        }
         if !region_dir.exists() {
             return Err(Error::msg(format!(
-                "region dir missing: {}",
+                "region dir missing: {} (use session create --bootstrap)",
                 region_dir.display()
             )));
         }
+        if data_version.is_none() {
+            if let Ok(info) = crate::level::info(&source_world) {
+                data_version = info.data_version;
+            }
+        }
+
         let id = id.unwrap_or_else(|| Uuid::new_v4().to_string()[..8].to_string());
         let root = Self::path_for(cwd, &id);
         if root.exists() {
@@ -81,6 +166,7 @@ impl Session {
             dirty: false,
             next_action_hint: 1,
             label,
+            data_version,
         };
         fs::write(root.join("meta.json"), serde_json::to_string_pretty(&meta)?)?;
         fs::write(root.join("HEAD"), "0\n")?;

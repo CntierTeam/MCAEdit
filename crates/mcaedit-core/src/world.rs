@@ -47,7 +47,14 @@ impl<'a> WorldView<'a> {
         let store = RegionStore::open(path);
         match store.read_chunk(chunk_x, chunk_z)? {
             Some(c) => Ok(c),
-            None => Ok(ChunkData::empty(chunk_x, chunk_z)),
+            None => Ok(ChunkData::empty_with_version(
+                chunk_x,
+                chunk_z,
+                self.session
+                    .meta
+                    .data_version
+                    .unwrap_or(crate::mc_version::DEFAULT_DATA_VERSION),
+            )),
         }
     }
 

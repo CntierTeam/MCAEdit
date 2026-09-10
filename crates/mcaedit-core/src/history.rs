@@ -67,6 +67,24 @@ impl History {
         Ok(Some(serde_json::from_str(&text)?))
     }
 
+    /// Action at the undo cursor (last applied), if any.
+    pub fn current(&self) -> Result<Option<Action>> {
+        if self.position == 0 {
+            return Ok(None);
+        }
+        self.load(self.position)
+    }
+
+    /// Overwrite the action file at the current cursor (e.g. rewrite description).
+    pub fn replace_current(&self, action: Action) -> Result<()> {
+        if self.position == 0 {
+            return Err(Error::msg("no current history entry"));
+        }
+        let path = self.action_path(self.position);
+        fs::write(path, serde_json::to_string_pretty(&action)?)?;
+        Ok(())
+    }
+
     pub fn push(&mut self, mut action: Action) -> Result<Action> {
         // Drop redo tail
         if self.position < self.size {
