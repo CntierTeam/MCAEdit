@@ -7,21 +7,23 @@ description: >-
   brush (sphere/cyl/clipboard/biome), mask/% pattern, smooth / smooth3d, biome paint,
   clipboard, templates, schem import/export, structure .nbt, level.dat / world create,
   history undo/redo, view screenshot, view preview (live window), terrain gen / fix-light /
-  tick, and commit. Prefer shell execution over pasting recipes. Trigger on: MCAEdit, mcaedit,
+  tick, commit, and /learn|/标注 style capture into styles/<slug>/SKILL.md for reuse
+  (/use style). Prefer shell execution over pasting recipes. Trigger on: MCAEdit, mcaedit,
   MCA, Anvil, Linear region, offline region edit, level.dat, structure, 结构, view screenshot,
   view preview, 截图, 预览, brush, schem, biome, smooth, smooth3d, 地形生成, fix-light, tick,
-  chunk palette, inspect select, summary-box, 负坐标, grid, colonnade, roof-rows.
+  chunk palette, inspect select, summary-box, 负坐标, grid, colonnade, roof-rows,
+  /learn, 标注, learn style, /use style, style skill.
 license: GPL-3.0
 metadata:
-  short-description: 代跑 mcaedit（session/edit/view/commit）
+  short-description: 代跑 mcaedit（session/edit/view/commit/learn风格）
 ---
 
 # MCAEdit
 
 产品：**`mcaedit`** — 离线 Minecraft Anvil（`.mca`）/ Linear（`.linear`）编辑 CLI（**GPL-3.0**）。
-**当前版本：0.11.0**（`mcaedit --version`；与 workspace `Cargo.toml` 对齐）。
+**当前版本：0.11.1**（`mcaedit --version`；与 workspace `Cargo.toml` 对齐）。
 
-你是 **操作员**：用户要开 session、inspect、填方/替换/几何、brush、mask/% pattern、smooth/smooth3d、biome、剪贴板、模板、`.schem`、**结构 `.nbt`**、**level.dat / world create**、undo、地形 gen、fix-light、**tick**、view 截图 / **实时 preview**、commit → **自己在 shell 执行 `mcaedit`**，不要只拼命令给用户。
+你是 **操作员**：用户要开 session、inspect、填方/替换/几何、brush、mask/% pattern、smooth/smooth3d、biome、剪贴板、模板、`.schem`、**结构 `.nbt`**、**level.dat / world create**、undo、地形 gen、fix-light、**tick**、view 截图 / **实时 preview**、commit、**`/learn` 标注风格** → **自己在 shell 执行 `mcaedit`**，不要只拼命令给用户。
 
 ## Agent 硬规则
 
@@ -29,14 +31,61 @@ metadata:
    `curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/install.sh | bash`
    或仓库内：`./scripts/install.sh --from-source --symlink-skill --force`（会先 `scripts/ensure-vendor.sh`）。
 2. **禁止**用「组装指令 / 操作手册 / SAMPLE / YOUR_CLI / crates 开发讲义 / 我只能帮你校验」代替执行。短句说明 → 立刻跑 → 根据输出继续。
-3. 用户问「能不能填方 / brush / smooth / biome / schem / structure / 建世界 / 生成地形 / 修光 / tick / 截图 / 预览 / commit」→ **先答能**，再 **马上执行**。缺世界路径、session id、坐标、方块 id、seed 时只问缺的那一项，问完继续跑。
+3. 用户问「能不能填方 / brush / smooth / biome / schem / structure / 建世界 / 生成地形 / 修光 / tick / 截图 / 预览 / commit / 标注风格」→ **先答能**，再 **马上执行**。缺世界路径、session id、坐标、方块 id、seed、风格名时只问缺的那一项，问完继续跑。
 4. 命令名永远 **`mcaedit`**，禁止 `SAMPLE` / `YOUR_CLI`。
-5. **所有**动作都要会代跑：`session` `inspect` `edit`（含 brush/mask/%pattern/smooth/smooth3d/biome/gen/fix-light/tick/grid/roof-rows/stairs）`schem` `structure` `world` `level` `template` `view`/`preview` `history` `commit`。
+5. **所有**动作都要会代跑：`session` `inspect` `edit`（含 brush/mask/%pattern/smooth/smooth3d/biome/gen/fix-light/tick/grid/roof-rows/stairs）`schem` `structure` `world` `level` `template` `view`/`preview` `history` `commit`；风格学习见下方 `/learn`。
 6. **永远用 session**：`--session <id>` 或 `export MCAEDIT_SESSION=<id>`。编辑只改工作副本；**`commit`** 才写回源世界。可先 `commit --dry-run`。
 7. 方块 AABB 用 `--from x,y,z --to x,y,z`；brush 用 `--at` + `--radius`；`gen` / `fix-light` / `tick` 用 **chunk** `--from x,z --to x,z`。
    **负坐标见下方 P1 专节**（`=` 最稳；≥0.9.0 空格形式也可）。
 8. `inspect select` 优先 ≤16³（硬上限约 48³；更大用 `inspect summary-box` / `view screenshot`）。多 agent：一人一 session label；他人 commit 后对本 session `session sync`。
 9. `minecraft:void_air`（set-section）= 保留；`replace --match air` / `--mask air` = air-like。`--pattern '50%stone,50%dirt'` 支持加权。破坏性 `discard` / 大范围 gen 意图不清时先确认一句。
+10. **风格复用**：用户说 `/use style <name>` 或「按某某风格建」→ **先 Read** `.codex/skills/mcaedit/styles/<name>/SKILL.md`，再按其中菜谱代跑。
+
+## 风格学习 `/learn` / 标注（0.11.1+）
+
+把 `.schem` / 世界 AABB 的建筑风格提炼成 **可复用子 SKILL**，供以后同风格建造。
+
+| 用户说法 | 动作 |
+|----------|------|
+| `/learn` · `标注` · `learn style from foo.schem` | 分析 → 写 `styles/<slug>/SKILL.md` |
+| `/use style <slug>` · `按 <slug> 风格建` | Read 该子 SKILL → 按菜谱 `mcaedit` 代跑 |
+
+### 最短流程（schem）
+
+```bash
+mcaedit --json schem info --file /path/to/foo.schem --style-hints
+# → materials_top / families / stairs_facing / layers / pillar_spacing_hint / suggested_ops
+```
+
+然后复制 [styles/_template/SKILL.md](styles/_template/SKILL.md) → `styles/<slug>/SKILL.md`，填材质表、柱距、roof-rows/stairs 菜谱、DO/DON'T、示例命令。
+
+### 世界 / `.mca`
+
+```bash
+mcaedit session create --world /path/to/world --id learn --label agent
+export MCAEDIT_SESSION=learn
+mcaedit inspect summary-box --from=-10,55,-55 --to=45,100,12
+# 可选：导出再 --style-hints
+mcaedit schem export --from=-10,55,-55 --to=45,100,12 --out /tmp/learn.schem
+mcaedit --json schem info --file /tmp/learn.schem --style-hints
+```
+
+### 发现与复用
+
+| 路径 | 用途 |
+|------|------|
+| [styles/_template/SKILL.md](styles/_template/SKILL.md) | 空模板（`/learn` 时复制） |
+| [styles/example-oak-frame/SKILL.md](styles/example-oak-frame/SKILL.md) | 填好的教学例 |
+| `styles/<slug>/SKILL.md` | 已学风格；`/use style <slug>` 时 Read |
+| [references/learn-style.md](references/learn-style.md) | 完整标注步骤 / 清单 |
+
+**已学风格（维护表，可选更新）：**
+
+| slug | 说明 |
+|------|------|
+| `example-oak-frame` | 橡木柱网 + 板墙 + 楼梯/台阶瓦垄（教学） |
+
+完整步骤与诚实边界：[references/learn-style.md](references/learn-style.md)。
 
 ## 负坐标（P1）— 必读
 
@@ -186,7 +235,7 @@ mcaedit inspect select --from=0,64,0 --to=7,66,7   # 小选区可视化
 
 ```bash
 command -v mcaedit || ~/.local/bin/mcaedit --help
-mcaedit --version   # 期望 0.11.0+
+mcaedit --version   # 期望 0.11.1+
 
 # 空目录建世界骨架（level.dat + region/）；默认 MC 26.2 DataVersion=4903
 mcaedit world create --path /tmp/newworld --name Demo --seed 42 --mc 26.2 --generator flat
@@ -260,7 +309,8 @@ mcaedit commit
 | **离线截图** | `view screenshot`：blockstates/models/贴图 + BlockLight/SkyLight；`--minecraft\|--assets-jar` / `--max-cells` / `--no-textures`；日志 `textures=models+textures jar path=...` 或 `palette reason=...` |
 | **实时预览** | `view preview` / `preview`（同管线；`--watch`；需显示器） |
 | 模板 | `template save\|list\|show\|paste\|rm\|export-schem\|import-schem` |
-| **`.schem`** | `schem info\|export\|import`（Sponge v2 写出+WE `Schematic` 包装；读 v1–v3；见下方专节） |
+| **`.schem`** | `schem info\|export\|import`（Sponge v2 写出+WE `Schematic` 包装；读 v1–v3；`--style-hints` 供 `/learn`） |
+| **风格学习 / 复用** | `/learn`·`标注` → `schem info --style-hints` → 写 `styles/<slug>/SKILL.md`；`/use style <slug>` → Read 后按菜谱建 |
 | **结构 `.nbt`** | `structure list\|info\|place\|export\|import\|clear-refs`（原版 structure；place 可 `--rotation` / `--mirror`） |
 | 撤销 / 重做 / 回退 | `history undo\|redo\|revert\|list` |
 | 写回世界 | `commit`（可先 `--dry-run`；注意 `warn=` 冲突提示） |
@@ -310,7 +360,7 @@ mcaedit view preview --assets-jar ~/.minecraft/versions/26.2/26.2.jar
 环境变量：`MCAEDIT_MINECRAFT_JAR` / `MCAEDIT_ASSETS_JAR`；大截图体积：`MCAEDIT_VIEW_MAX_CELLS`（默认 2000000）。
 CLI 日志字段：`textures=models+textures jar path=...` 或 `textures=palette reason=...`（详见上文「view 渲染」专节）。
 
-## Sponge `.schem`（v0.10.1+ / 含于 0.11.0）— Agent 必读
+## Sponge `.schem`（v0.10.1+ / 含于 0.11.1）— Agent 必读
 
 与原版 **structure `.nbt`** 不同。WorldEdit / FAWE 常用 Sponge Schematic。
 
@@ -326,6 +376,8 @@ mcaedit schem info --file /path/to/build.schem
 mcaedit --json schem info --file /path/to/build.schem
 # JSON 字段：version, DataVersion, mc, width/height/length, offset, volume,
 # palette_n, entities, block_entities, blocks_top[{block,count}]
+# /learn 标注：加 --style-hints → style_hints{materials_top,families,stairs_*,layers,suggested_ops,…}
+mcaedit --json schem info --file /path/to/build.schem --style-hints
 
 # 导出（需 session）→ 工作副本 AABB
 mcaedit schem export --from=0,64,0 --to=15,80,15 --out /tmp/box.schem
@@ -378,7 +430,7 @@ curl -fsSL https://raw.githubusercontent.com/CntierTeam/MCAEdit/main/scripts/ins
 
 `--symlink-skill` 会把 `~/.codex/skills/mcaedit` 链到仓库 `.codex/skills/mcaedit`（改 SKILL 后无需再拷）。
 
-## Pumpkin 裁枝（源码构建 / 0.11.0+）
+## Pumpkin 裁枝（源码构建 / 0.11.0+ / 含于 0.11.1）
 
 离线 `gen` / `fix-light` / `tick` 走 `vendor/pumpkin` 的 `pumpkin-world` + `pumpkin-data`。**不**编译服务端/协议/插件 crate。`scripts/ensure-vendor.sh` 默认裁掉 `pumpkin-data` 的 item/translation/advancement/… features（`MCAEDIT_PUMPKIN_MINIMAL=1`）。仍需完整 submodule **克隆**；裁的是 rustc 图。关闭：`MCAEDIT_PUMPKIN_MINIMAL=0 bash scripts/ensure-vendor.sh`。详见 README「Pumpkin 裁枝」。
 

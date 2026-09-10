@@ -142,6 +142,381 @@ pub fn info(path: &Path) -> Result<SchemInfo> {
     info_from_root(&root, path)
 }
 
+/// Style-learning summary for agents (`schem info --style-hints`).
+#[derive(Clone, Debug)]
+pub struct StyleHints {
+    pub materials_top: Vec<(String, usize)>,
+    pub families: BTreeMap<String, usize>,
+    pub stairs_facing: BTreeMap<String, usize>,
+    pub stairs_half: BTreeMap<String, usize>,
+    pub slab_type: BTreeMap<String, usize>,
+    pub layers: Vec<LayerHint>,
+    pub solid_ratio: f64,
+    pub pillar_spacing_hint: Option<(u32, u32)>,
+    pub suggested_ops: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LayerHint {
+    pub y: u32,
+    pub solid: usize,
+    pub air: usize,
+    pub dominant: Option<(String, usize)>,
+}
+
+impl StyleHints {
+    pub fn lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        out.push(format!("solid_ratio={:.3}", self.solid_ratio));
+        if !self.materials_top.is_empty() {
+            let s = self
+                .materials_top
+                .iter()
+                .map(|(n, c)| format!("{n}={c}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            out.push(format!("materials_top={s}"));
+        }
+        if !self.families.is_empty() {
+            let s = self
+                .families
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            out.push(format!("families={s}"));
+        }
+        if !self.stairs_facing.is_empty() {
+            let s = self
+                .stairs_facing
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            out.push(format!("stairs_facing={s}"));
+        }
+        if !self.stairs_half.is_empty() {
+            let s = self
+                .stairs_half
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            out.push(format!("stairs_half={s}"));
+        }
+        if !self.slab_type.is_empty() {
+            let s = self
+                .slab_type
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            out.push(format!("slab_type={s}"));
+        }
+        if let Some((sx, sz)) = self.pillar_spacing_hint {
+            out.push(format!("pillar_spacing_hint={sx},{sz}"));
+        }
+        for layer in &self.layers {
+            let dom = layer
+                .dominant
+                .as_ref()
+                .map(|(n, c)| format!("{n}={c}"))
+                .unwrap_or_else(|| "-".into());
+            out.push(format!(
+                "layer y={} solid={} air={} dominant={}",
+                layer.y, layer.solid, layer.air, dom
+            ));
+        }
+        for op in &self.suggested_ops {
+            out.push(format!("suggest={op}"));
+        }
+        out
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        let materials: Vec<serde_json::Value> = self
+            .materials_top
+            .iter()
+            .map(|(b, n)| serde_json::json!({ "block": b, "count": n }))
+            .collect();
+        let layers: Vec<serde_json::Value> = self
+            .layers
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "y": l.y,
+                    "solid": l.solid,
+                    "air": l.air,
+                    "dominant": l.dominant.as_ref().map(|(b, n)| serde_json::json!({
+                        "block": b,
+                        "count": n,
+                    })),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "materials_top": materials,
+            "families": self.families,
+            "stairs_facing": self.stairs_facing,
+            "stairs_half": self.stairs_half,
+            "slab_type": self.slab_type,
+            "layers": layers,
+            "solid_ratio": self.solid_ratio,
+            "pillar_spacing_hint": self.pillar_spacing_hint.map(|(x, z)| [x, z]),
+            "suggested_ops": self.suggested_ops,
+        })
+    }
+}
+
+/// Analyze a `.schem` into style hints for `/learn` / 标注 workflows.
+pub fn style_hints(path: &Path) -> Result<StyleHints> {
+    let tpl = import_to_template(path, "style")?;
+    Ok(style_hints_from_template(&tpl))
+}
+
+pub fn style_hints_from_template(tpl: &Template) -> StyleHints {
+    let [dx, dy, dz] = tpl.size;
+    let volume = (dx as usize)
+        .saturating_mul(dy as usize)
+        .saturating_mul(dz as usize);
+    let mut material_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut families: BTreeMap<String, usize> = BTreeMap::new();
+    let mut stairs_facing: BTreeMap<String, usize> = BTreeMap::new();
+    let mut stairs_half: BTreeMap<String, usize> = BTreeMap::new();
+    let mut slab_type: BTreeMap<String, usize> = BTreeMap::new();
+    let mut solid_n = 0usize;
+    let mut layers = Vec::with_capacity(dy as usize);
+    let mut pillar_xy: Vec<(u32, u32)> = Vec::new();
+
+    for y in 0..dy {
+        let mut layer_counts: BTreeMap<String, usize> = BTreeMap::new();
+        let mut solid = 0usize;
+        let mut air = 0usize;
+        for z in 0..dz {
+            for x in 0..dx {
+                let idx = ((y * dz + z) * dx + x) as usize;
+                let id = tpl.blocks.get(idx).copied().unwrap_or(0);
+                let name = tpl
+                    .palette
+                    .get(id as usize)
+                    .cloned()
+                    .unwrap_or_else(|| BlockState::air().to_compact());
+                let bs = BlockState::parse(&name).unwrap_or_else(|_| BlockState::air());
+                if bs.is_air_like() {
+                    air += 1;
+                    continue;
+                }
+                solid += 1;
+                solid_n += 1;
+                *material_counts.entry(bs.to_compact()).or_insert(0) += 1;
+                *layer_counts.entry(bs.to_compact()).or_insert(0) += 1;
+                let fam = block_family(&bs.name);
+                *families.entry(fam.to_string()).or_insert(0) += 1;
+                if fam == "stairs" {
+                    if let Some(f) = bs.properties.get("facing") {
+                        *stairs_facing.entry(f.clone()).or_insert(0) += 1;
+                    }
+                    if let Some(h) = bs.properties.get("half") {
+                        *stairs_half.entry(h.clone()).or_insert(0) += 1;
+                    }
+                }
+                if fam == "slab" {
+                    if let Some(t) = bs.properties.get("type") {
+                        *slab_type.entry(t.clone()).or_insert(0) += 1;
+                    }
+                }
+                if fam == "log" || fam == "pillar" {
+                    // sample mid-height pillars for spacing
+                    if y == dy / 2 || (dy <= 2 && y == 0) {
+                        pillar_xy.push((x, z));
+                    }
+                }
+            }
+        }
+        let mut pairs: Vec<(String, usize)> = layer_counts.into_iter().collect();
+        pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        layers.push(LayerHint {
+            y,
+            solid,
+            air,
+            dominant: pairs.first().cloned(),
+        });
+    }
+
+    let mut materials_top: Vec<(String, usize)> = material_counts.into_iter().collect();
+    materials_top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    materials_top.truncate(INFO_TOP_BLOCKS);
+
+    let solid_ratio = if volume == 0 {
+        0.0
+    } else {
+        solid_n as f64 / volume as f64
+    };
+
+    let pillar_spacing_hint = detect_spacing(&pillar_xy);
+    let suggested_ops = suggest_ops(
+        &families,
+        &stairs_facing,
+        &layers,
+        pillar_spacing_hint,
+        dy,
+    );
+
+    StyleHints {
+        materials_top,
+        families,
+        stairs_facing,
+        stairs_half,
+        slab_type,
+        layers,
+        solid_ratio,
+        pillar_spacing_hint,
+        suggested_ops,
+    }
+}
+
+fn block_family(name: &str) -> &'static str {
+    let base = name.rsplit_once(':').map(|(_, n)| n).unwrap_or(name);
+    if base.ends_with("_stairs") {
+        "stairs"
+    } else if base.ends_with("_slab") {
+        "slab"
+    } else if base.ends_with("_wall") {
+        "wall"
+    } else if base.ends_with("_fence") || base.ends_with("_fence_gate") {
+        "fence"
+    } else if base.ends_with("_log") || base.ends_with("_wood") || base.ends_with("_stem") {
+        "log"
+    } else if base.ends_with("_planks") {
+        "planks"
+    } else if base.ends_with("_door") || base.ends_with("_trapdoor") {
+        "door"
+    } else if base.contains("glass") {
+        "glass"
+    } else if base.ends_with("_carpet") {
+        "carpet"
+    } else if base.ends_with("_wool")
+        || base.ends_with("_terracotta")
+        || base.ends_with("_concrete")
+        || base.ends_with("_concrete_powder")
+    {
+        "color_block"
+    } else if base.contains("brick") || base.contains("stone") || base.contains("deepslate") {
+        "masonry"
+    } else if base.ends_with("_pillar") || base == "purpur_pillar" || base == "quartz_pillar" {
+        "pillar"
+    } else {
+        "other"
+    }
+}
+
+fn detect_spacing(points: &[(u32, u32)]) -> Option<(u32, u32)> {
+    if points.len() < 4 {
+        return None;
+    }
+    let mut xs: Vec<u32> = points.iter().map(|(x, _)| *x).collect();
+    let mut zs: Vec<u32> = points.iter().map(|(_, z)| *z).collect();
+    xs.sort_unstable();
+    zs.sort_unstable();
+    xs.dedup();
+    zs.dedup();
+    let sx = gcd_gaps(&xs)?;
+    let sz = gcd_gaps(&zs)?;
+    if sx < 2 && sz < 2 {
+        return None;
+    }
+    Some((sx.max(1), sz.max(1)))
+}
+
+fn gcd_gaps(sorted_unique: &[u32]) -> Option<u32> {
+    if sorted_unique.len() < 2 {
+        return None;
+    }
+    let mut g = 0u32;
+    for w in sorted_unique.windows(2) {
+        let d = w[1].saturating_sub(w[0]);
+        if d == 0 {
+            continue;
+        }
+        g = if g == 0 { d } else { gcd_u32(g, d) };
+    }
+    if g == 0 {
+        None
+    } else {
+        Some(g)
+    }
+}
+
+fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
+fn suggest_ops(
+    families: &BTreeMap<String, usize>,
+    stairs_facing: &BTreeMap<String, usize>,
+    layers: &[LayerHint],
+    pillar_spacing: Option<(u32, u32)>,
+    height: u32,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let stairs = families.get("stairs").copied().unwrap_or(0);
+    let slabs = families.get("slab").copied().unwrap_or(0);
+    let logs = families.get("log").copied().unwrap_or(0)
+        + families.get("pillar").copied().unwrap_or(0);
+    let masonry = families.get("masonry").copied().unwrap_or(0);
+    let planks = families.get("planks").copied().unwrap_or(0);
+
+    if let Some((sx, sz)) = pillar_spacing {
+        out.push(format!(
+            "edit grid/colonnade --spacing-x {sx} --spacing-z {sz} (pillar rhythm)"
+        ));
+    } else if logs > 8 {
+        out.push("edit grid/colonnade (logs/pillars present; probe spacing manually)".into());
+    }
+
+    if stairs > 0 && slabs > 0 {
+        let facing = stairs_facing
+            .iter()
+            .max_by_key(|(_, n)| *n)
+            .map(|(k, _)| k.as_str())
+            .unwrap_or("north");
+        out.push(format!(
+            "edit roof-rows --stairs … --stairs-facing {facing} (stairs+slabs)"
+        ));
+    } else if stairs > 0 {
+        let facing = stairs_facing
+            .iter()
+            .max_by_key(|(_, n)| *n)
+            .map(|(k, _)| k.as_str())
+            .unwrap_or("east");
+        out.push(format!(
+            "edit stairs --facing {facing} (dominant stair facing)"
+        ));
+    }
+
+    if masonry > 0 || planks > 0 {
+        out.push("edit walls / fill / outline for shell; hollow for interiors".into());
+    }
+
+    // top third dense → likely roof band
+    if height >= 3 {
+        let start = (height * 2 / 3) as usize;
+        let top_solid: usize = layers.get(start..).map(|s| s.iter().map(|l| l.solid).sum()).unwrap_or(0);
+        let bot_solid: usize = layers.get(..start).map(|s| s.iter().map(|l| l.solid).sum()).unwrap_or(0);
+        if top_solid > 0 && bot_solid > 0 && top_solid * 2 > bot_solid {
+            out.push("inspect layers: upper third denser — treat as roof/cornice band".into());
+        }
+    }
+
+    out.push("schem import for exact paste; or rebuild with fill/grid/roof-rows/stairs".into());
+    out
+}
+
 fn info_from_root(root: &Value, path: &Path) -> Result<SchemInfo> {
     let version = compound_i32(root, "Version").unwrap_or(2);
     let data_version = compound_i32(root, "DataVersion");
@@ -850,5 +1225,48 @@ mod tests {
         write_gzip_nbt(&path, Value::Compound(root.into_iter().collect()));
         let err = info(&path).unwrap_err().to_string();
         assert!(err.contains("classic MCEdit"), "{err}");
+    }
+
+    #[test]
+    fn style_hints_detects_stairs_and_spacing() {
+        // 5x3x5: oak_log pillars on 4-spacing corners + oak_stairs/slab roof band
+        let palette = vec![
+            "minecraft:air".into(),
+            "minecraft:oak_log[axis=y]".into(),
+            "minecraft:oak_stairs[facing=north,half=bottom,shape=straight]".into(),
+            "minecraft:oak_slab[type=bottom]".into(),
+        ];
+        let dx = 5u32;
+        let dy = 3u32;
+        let dz = 5u32;
+        let volume = (dx * dy * dz) as usize;
+        let mut blocks = vec![0u16; volume];
+        let idx = |x: u32, y: u32, z: u32| ((y * dz + z) * dx + x) as usize;
+        for &(x, z) in &[(0u32, 0u32), (0, 4), (4, 0), (4, 4)] {
+            for y in 0..2 {
+                blocks[idx(x, y, z)] = 1;
+            }
+        }
+        for x in 0..dx {
+            for z in 0..dz {
+                blocks[idx(x, 2, z)] = if (x + z) % 2 == 0 { 2 } else { 3 };
+            }
+        }
+        let tpl = Template {
+            name: "style-test".into(),
+            size: [dx, dy, dz],
+            palette,
+            blocks,
+            entities: Vec::new(),
+        };
+        let hints = style_hints_from_template(&tpl);
+        assert!(hints.families.get("stairs").copied().unwrap_or(0) > 0);
+        assert!(hints.families.get("slab").copied().unwrap_or(0) > 0);
+        assert_eq!(hints.stairs_facing.get("north").copied(), Some(13));
+        assert_eq!(hints.pillar_spacing_hint, Some((4, 4)));
+        assert!(hints.suggested_ops.iter().any(|s| {
+            s.contains("roof-rows") || s.contains("colonnade") || s.contains("grid")
+        }));
+        let _ = hints.to_json();
     }
 }

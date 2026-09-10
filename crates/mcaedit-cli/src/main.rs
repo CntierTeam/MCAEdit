@@ -178,6 +178,9 @@ enum SchemCmd {
     Info {
         #[arg(long)]
         file: PathBuf,
+        /// Emit material families / stair facing / layer dominant / suggested ops (for /learn)
+        #[arg(long = "style-hints")]
+        style_hints: bool,
     },
 }
 
@@ -1784,35 +1787,49 @@ fn run() -> Result<()> {
                     action.description
                 );
             }
-            SchemCmd::Info { file } => {
+            SchemCmd::Info { file, style_hints } => {
                 let info = mcaedit_core::schem::info(&file)?;
+                let hints = if style_hints {
+                    Some(mcaedit_core::schem::style_hints(&file)?)
+                } else {
+                    None
+                };
                 if cli.json {
                     let top: Vec<serde_json::Value> = info
                         .top_blocks
                         .iter()
                         .map(|(name, n)| serde_json::json!({ "block": name, "count": n }))
                         .collect();
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "path": info.path,
-                            "version": info.version,
-                            "DataVersion": info.data_version,
-                            "mc": info.mc,
-                            "width": info.width,
-                            "height": info.height,
-                            "length": info.length,
-                            "offset": info.offset,
-                            "volume": info.volume,
-                            "palette_n": info.palette_n,
-                            "entities": info.entities,
-                            "block_entities": info.block_entities,
-                            "blocks_top": top,
-                        })
-                    );
+                    let mut obj = serde_json::json!({
+                        "path": info.path,
+                        "version": info.version,
+                        "DataVersion": info.data_version,
+                        "mc": info.mc,
+                        "width": info.width,
+                        "height": info.height,
+                        "length": info.length,
+                        "offset": info.offset,
+                        "volume": info.volume,
+                        "palette_n": info.palette_n,
+                        "entities": info.entities,
+                        "block_entities": info.block_entities,
+                        "blocks_top": top,
+                    });
+                    if let Some(h) = hints {
+                        obj.as_object_mut()
+                            .unwrap()
+                            .insert("style_hints".into(), h.to_json());
+                    }
+                    println!("{obj}");
                 } else {
                     for line in info.lines() {
                         println!("{line}");
+                    }
+                    if let Some(h) = hints {
+                        println!("style_hints=1");
+                        for line in h.lines() {
+                            println!("{line}");
+                        }
                     }
                 }
             }
